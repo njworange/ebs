@@ -5,8 +5,20 @@
 {{ macros.m_row_start('5') }}
 {{ macros.m_row_end() }}
 
+<div class="card mb-3 shadow-sm border-0">
+  <div class="card-body py-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-start" style="gap:12px;">
+      <div>
+        <h5 class="mb-1">EBS 자동 목록</h5>
+        <div class="text-muted small">최신 VOD 수집 결과를 검색하고, 상태를 확인하고, 필요한 항목을 바로 큐에 넣거나 재시도할 수 있습니다.</div>
+      </div>
+      <div id="listSummaryBadge" class="small text-muted"></div>
+    </div>
+  </div>
+</div>
+
 <form id="form_search" class="form-inline" style="text-align:left" onsubmit="return false;">
-  <div class="container-fluid">
+  <div class="container-fluid border rounded py-3 mb-3" style="background:#fafcff;">
     <div class="row show-grid">
       <span class="col-md-4">
         <select id="order" name="order" class="form-control form-control-sm">
@@ -221,6 +233,10 @@ function renderStatus(status, completed) {
 
 function make_list(data) {
   listData = data || [];
+  const completedCount = listData.filter(item => item && item.completed).length;
+  const waitingCount = listData.filter(item => item && (item.status || '').toUpperCase() === 'WAITING').length;
+  const failedCount = listData.filter(item => item && ['FAILED', 'GIVEUP', 'PREVIEW_BLOCKED'].includes((item.status || '').toUpperCase())).length;
+  $('#listSummaryBadge').text(`현재 목록 ${listData.length} / 완료 ${completedCount} / 대기 ${waitingCount} / 실패계열 ${failedCount}`);
   let str = '';
   for (let i in data) {
     let item = data[i];
@@ -228,13 +244,18 @@ function make_list(data) {
     let thumb = item.thumbnail ? '<img src="' + escapeHtml(item.thumbnail) + '" class="img-fluid" loading="lazy">' : '<div style="width:100%;padding-top:56%;background:#f0f0f0;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:0.85em;border-radius:4px;position:relative;"><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">No Image</span></div>';
     str += j_col(3, thumb);
 
-    let tmp = '<strong>' + escapeHtml(item.display_title || item.program_title || item.remote_program_id || '-') + '</strong>';
+    let tmp = '<div class="d-flex flex-wrap align-items-center" style="gap:8px;">';
+    tmp += '<strong>' + escapeHtml(item.display_title || item.program_title || item.remote_program_id || '-') + '</strong>';
+    tmp += '<span class="badge badge-light border text-muted">' + escapeHtml(item.source_type || 'tv_show') + '</span>';
+    tmp += '</div>';
     if (item.release_date) tmp += ' (' + escapeHtml(item.release_date) + ')';
     tmp += ' / ' + escapeHtml(item.quality_code || '-');
     tmp += '<br>';
     tmp += '<strong>파일명</strong> : ' + escapeHtml(item.filepath || '-');
     tmp += '<br>';
     tmp += '<strong>에피소드 번호 / 제목</strong> : ' + escapeHtml(item.episode_no || '-') + ' / ' + escapeHtml(item.episode_title || '-');
+    tmp += '<br>';
+    tmp += '<strong>원격 ID</strong> : ' + escapeHtml(item.remote_program_id || '-') + ' / ' + escapeHtml(item.remote_episode_id || '-') + ' / ' + escapeHtml(item.remote_media_id || '-');
     tmp += '<br>';
     tmp += '<strong>상태</strong> : ' + renderStatus(item.status, item.completed);
     if (item.message) tmp += ' - ' + escapeHtml(item.message);

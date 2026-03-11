@@ -5,32 +5,42 @@
 {{ macros.m_row_start('5') }}
 {{ macros.m_row_end() }}
 
-<div class="form-group row">
-  <label class="col-sm-3 col-form-label">URL or Code</label>
-  <div class="col-sm-9">
-    <input id="analyze_input" type="text" class="form-control" placeholder="https://www.ebs.co.kr/tv/show?courseId=...&lectId=...&stepId=..." value="{{ arg.get('url_or_code', '') }}">
-    <small class="form-text text-muted">`tv/show` URL, `courseId=...`, 또는 `courseId`를 입력하세요.</small>
+<div class="card mb-3 shadow-sm border-0">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-start mb-3" style="gap:12px;">
+      <div>
+        <h5 class="mb-1">EBS 프로그램 분석</h5>
+        <div class="text-muted small">`tv/show` URL이나 `courseId`를 넣고 시즌별 에피소드를 분석한 뒤 원하는 화만 선택해 큐에 추가할 수 있습니다.</div>
+      </div>
+      <div id="analyzeSummaryBadge" class="small text-muted"></div>
+    </div>
+
+    <div class="form-group row mb-3">
+      <label class="col-sm-3 col-form-label">URL or Code</label>
+      <div class="col-sm-9">
+        <input id="analyze_input" type="text" class="form-control" placeholder="https://www.ebs.co.kr/tv/show?courseId=...&lectId=...&stepId=..." value="{{ arg.get('url_or_code', '') }}">
+        <small class="form-text text-muted">`tv/show` URL, `courseId=...`, 또는 `courseId`를 입력하세요.</small>
+      </div>
+    </div>
+
+    <div class="form-group row mb-3">
+      <label class="col-sm-3 col-form-label">시즌(선택)</label>
+      <div class="col-sm-9">
+        <select id="season_select" class="form-control">
+          <option value="">자동</option>
+        </select>
+        <small class="form-text text-muted">분석 후 시즌을 선택하고 다시 `분석`하면 해당 시즌 목록을 다시 가져옵니다.</small>
+      </div>
+    </div>
+
+    <div class="form-group row mb-0">
+      <label class="col-sm-3 col-form-label">프로그램</label>
+      <div class="col-sm-9">
+        <input id="program_title" type="text" class="form-control" value="" readonly>
+      </div>
+    </div>
   </div>
 </div>
-
-<div class="form-group row">
-  <label class="col-sm-3 col-form-label">시즌(선택)</label>
-  <div class="col-sm-9">
-    <select id="season_select" class="form-control">
-      <option value="">자동</option>
-    </select>
-    <small class="form-text text-muted">분석 후 시즌을 선택하고 다시 `분석`하면 해당 시즌 목록을 다시 가져옵니다.</small>
-  </div>
-</div>
-
-<div class="form-group row">
-  <label class="col-sm-3 col-form-label">프로그램</label>
-  <div class="col-sm-9">
-    <input id="program_title" type="text" class="form-control" value="" readonly>
-  </div>
-</div>
-
-<hr/>
 
 <div id="analyze_result"></div>
 
@@ -114,9 +124,15 @@ function renderAnalyze(data) {
 
   const episodes = (data && data.episodes) ? data.episodes : [];
   const qLabel = qualityLabelFromCode("{{ arg['basic_quality'] }}");
+  const existingCount = episodes.filter(ep => ep && ep.local_exists).length;
+  const completedCount = episodes.filter(ep => ep && ep.local_completed).length;
+  $('#analyzeSummaryBadge').text(`에피소드 ${episodes.length} / 로컬 존재 ${existingCount} / 완료 ${completedCount}`);
 
   let html = '';
-  html += `<div class="mb-2"><strong>에피소드 ${episodes.length}개</strong></div>`;
+  html += '<div class="d-flex flex-wrap justify-content-between align-items-center mb-2" style="gap:8px;">';
+  html += `<strong>에피소드 ${episodes.length}개</strong>`;
+  html += `<span class="text-muted small">기본 화질 ${escapeHtml(qLabel)} / 선택한 항목만 수동 큐 추가</span>`;
+  html += '</div>';
   html += '<div class="table-responsive">';
   html += '<table class="table table-sm table-hover">';
   html += '<thead><tr><th style="width:30px;"></th><th style="width:140px;">썸네일</th><th>정보</th><th style="width:160px;">동작</th></tr></thead><tbody>';
@@ -140,7 +156,10 @@ function renderAnalyze(data) {
     html += '</tr>';
   }
   html += '</tbody></table></div>';
-  if (episodes.length === 0) html = '<h4>에피소드 목록이 없습니다.</h4>';
+  if (episodes.length === 0) {
+    $('#analyzeSummaryBadge').text('에피소드 0 / 로컬 존재 0 / 완료 0');
+    html = '<div class="alert alert-light border mb-0">에피소드 목록이 없습니다. 다른 `courseId`이거나 현재 프로그램에 노출된 VOD가 없는 상태일 수 있습니다.</div>';
+  }
   $('#analyze_result').html(html);
 }
 
@@ -151,6 +170,8 @@ function analyze() {
     notify('URL 또는 코드를 입력하세요.', 'warning');
     return;
   }
+  $('#analyzeSummaryBadge').text('분석 중...');
+  $('#analyze_result').html('<div class="alert alert-light border mb-0">프로그램 정보를 불러오는 중입니다...</div>');
   globalSendCommand('analyze_url', input, stepId, null, function(ret){
     if (ret.ret === 'success') {
       notify(ret.msg || '분석 완료', 'success');
