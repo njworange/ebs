@@ -152,6 +152,19 @@ class ModelEbsEpisode(ModelBase):
     ):
         with F.app.app_context():
             query = F.db.session.query(cls)
+            option1 = (option1 or "all").strip().lower()
+            if option1 == "completed":
+                query = query.filter(cls.completed == True)
+            elif option1 == "waiting":
+                query = query.filter(cls.completed == False).filter(cls.status == "WAITING")
+            elif option1 == "downloading":
+                query = query.filter(cls.completed == False).filter(cls.status == "DOWNLOADING")
+            elif option1 == "failed":
+                query = query.filter(cls.completed == False).filter(cls.status.in_(["FAILED", "GIVEUP"]))
+            elif option1 == "filtered":
+                query = query.filter(cls.completed == False).filter(cls.status == "FILTERED")
+            elif option1 == "preview":
+                query = query.filter(cls.completed == False).filter(cls.status == "PREVIEW_BLOCKED")
             if search:
                 like = f"%{search}%"
                 query = query.filter(
@@ -159,6 +172,9 @@ class ModelEbsEpisode(ModelBase):
                         cls.program_title.like(like),
                         cls.episode_title.like(like),
                         cls.episode_no.like(like),
+                        cls.remote_program_id.like(like),
+                        cls.remote_episode_id.like(like),
+                        cls.remote_media_id.like(like),
                     )
                 )
             if order == "desc":
@@ -191,12 +207,16 @@ class ModelEbsEpisode(ModelBase):
             "status": self.status,
             "message": self.message,
             "filepath": self.filepath,
+            "filesize": self.filesize,
             "show_url": self.show_url,
             "thumbnail": self.thumbnail,
             "source_type": self.source_type,
             "is_preview": self.is_preview,
             "is_login": self.is_login,
             "buy_state": self.buy_state,
+            "retry": self.retry,
+            "completed": self.completed,
+            "completed_time": self.completed_time.strftime("%Y-%m-%d %H:%M:%S") if self.completed_time else "",
         }
 
     def save(self) -> None:

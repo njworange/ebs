@@ -52,13 +52,17 @@ class ModuleBasic(PluginModuleBase):
                         cookie=(P.ModelSetting.get(f"{self.name}_cookie") or "").strip(),
                         user_agent=P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0",
                     )
-                    result = client.analyze_program_url(url_or_code)
+                    result = client.analyze_program_url(url_or_code, step_id=(arg2 or "").strip() or None)
                     ret["msg"] = result.get("message") or "분석 완료"
-                    ret["data"] = result.get("data") or {}
+                    data = result.get("data") or {}
+                    episodes = data.get("episodes") or []
+                    if isinstance(episodes, list):
+                        self.annotate_episodes(episodes)
+                    ret["data"] = data
                     if not result.get("success"):
                         ret["ret"] = "warning"
                     else:
-                        self.previous_analyze = result.get("data") or {}
+                        self.previous_analyze = data
                         P.ModelSetting.set(f"{self.name}_recent_url", url_or_code)
             case "download_manual":
                 from .models import ModelEbsEpisode
@@ -108,3 +112,30 @@ class ModuleBasic(PluginModuleBase):
                 ret["ret"] = "warning"
                 ret["msg"] = f"지원하지 않는 명령: {command}"
         return flask.jsonify(ret)
+
+    def annotate_episodes(self, episodes: list[dict]) -> None:
+        from .models import ModelEbsEpisode
+
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            remote_program_id = (ep.get("course_id") or ep.get("remote_program_id") or "").strip()
+            remote_episode_id = (ep.get("lect_id") or ep.get("remote_episode_id") or "").strip()
+            remote_media_id = (ep.get("step_id") or ep.get("remote_media_id") or "").strip()
+            if (not remote_program_id) or (not remote_episode_id) or (not remote_media_id):
+                ep["local_exists"] = False
+                ep["local_status"] = ""
+                ep["local_message"] = ""
+                ep["local_completed"] = False
+                continue
+            item = ModelEbsEpisode.get_by_keys(remote_program_id, remote_episode_id, remote_media_id)
+            if not item:
+                ep["local_exists"] = False
+                ep["local_status"] = ""
+                ep["local_message"] = ""
+                ep["local_completed"] = False
+                continue
+            ep["local_exists"] = True
+            ep["local_status"] = item.status or ("COMPLETED" if item.completed else "")
+            ep["local_message"] = item.message or ""
+            ep["local_completed"] = bool(item.completed)

@@ -58,6 +58,13 @@ def parse_collect_since(value: str) -> datetime.date | None:
         return None
 
 
+def parse_int_arg(value: str) -> int | None:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
 class ModuleAuto(PluginModuleBase):
     download_thread = None
 
@@ -118,6 +125,57 @@ class ModuleAuto(PluginModuleBase):
                 ret["msg"] = f"실패 항목 {reset_count}개를 재시도 상태로 변경, {queued}개를 큐에 추가했습니다."
             case "queue_reset":
                 ret["msg"] = f"큐 초기화 완료 ({self.reset_queue()}개)."
+            case "reset_status":
+                item_id = parse_int_arg(arg1)
+                item = ModelEbsEpisode.get_by_id(item_id) if item_id is not None else None
+                if not item:
+                    ret["ret"] = "warning"
+                    ret["msg"] = "항목을 찾을 수 없습니다."
+                else:
+                    item.completed = False
+                    item.retry = 0
+                    item.status = "PENDING"
+                    item.message = ""
+                    item.save()
+                    ret["msg"] = "상태를 초기화했습니다."
+            case "delete":
+                item_id = parse_int_arg(arg1)
+                if item_id is not None and ModelEbsEpisode.delete_by_id(item_id):
+                    ret["msg"] = "삭제했습니다."
+                else:
+                    ret["ret"] = "warning"
+                    ret["msg"] = "삭제에 실패했습니다."
+            case "download_item":
+                item_id = parse_int_arg(arg1)
+                item = ModelEbsEpisode.get_by_id(item_id) if item_id is not None else None
+                if not item:
+                    ret["ret"] = "warning"
+                    ret["msg"] = "항목을 찾을 수 없습니다."
+                else:
+                    item.completed = False
+                    item.retry = 0
+                    item.status = "WAITING"
+                    item.message = ""
+                    item.save()
+                    if QueueService.enqueue_item(item.id):
+                        ret["msg"] = f"다운로드 큐에 추가했습니다. (ID: {item.id})"
+                    else:
+                        ret["msg"] = f"이미 큐에 있습니다. (ID: {item.id})"
+            case "add_condition":
+                target = (arg1 or "").strip()
+                value = (arg2 or "").strip()
+                if not target or not value:
+                    ret["ret"] = "warning"
+                    ret["msg"] = "추가할 대상이 없습니다."
+                else:
+                    old_list = P.ModelSetting.get_list(target, ",")
+                    old_str = P.ModelSetting.get(target) or ""
+                    if value in old_list:
+                        ret["ret"] = "warning"
+                        ret["msg"] = "이미 설정되어 있습니다."
+                    else:
+                        P.ModelSetting.set(target, f"{old_str}, {value}" if old_str else value)
+                        ret["msg"] = "추가했습니다."
             case _:
                 ret["ret"] = "warning"
                 ret["msg"] = f"지원하지 않는 명령: {command}"
