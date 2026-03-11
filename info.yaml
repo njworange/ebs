@@ -1,0 +1,7 @@
+title: "EBS"
+version: "0.0.1"
+package_name: "ebs"
+developer: "njworange"
+description: "EBS TV VOD 다운로더"
+home: "https://github.com/njworange/ebs"
+more: "https://raw.githubusercontent.com/njworange/ebs/main/README.md"
