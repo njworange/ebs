@@ -49,7 +49,7 @@ class ModuleBasic(PluginModuleBase):
                     ret["msg"] = "URL 또는 코드를 입력하세요."
                 else:
                     client = EbsTvClient(
-                        cookie=(P.ModelSetting.get(f"{self.name}_cookie") or "").strip(),
+                        cookie="",
                         user_agent=P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0",
                     )
                     result = client.analyze_program_url(url_or_code, step_id=(arg2 or "").strip() or None)

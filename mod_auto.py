@@ -230,13 +230,22 @@ class ModuleAuto(PluginModuleBase):
                     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
 
     def make_client(self) -> EbsTvClient:
+        return self.make_public_client()
+
+    def make_public_client(self) -> EbsTvClient:
+        return EbsTvClient(
+            cookie="",
+            user_agent=P.ModelSetting.get("basic_user_agent") or "Mozilla/5.0",
+        )
+
+    def make_auth_client(self) -> EbsTvClient:
         return EbsTvClient(
             cookie=(P.ModelSetting.get("basic_cookie") or "").strip(),
             user_agent=P.ModelSetting.get("basic_user_agent") or "Mozilla/5.0",
         )
 
     def collect_episodes(self) -> int:
-        client = self.make_client()
+        client = self.make_public_client()
         page_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_page_limit"), 1)
         collect_since = parse_collect_since(P.ModelSetting.get(f"{self.name}_collect_since"))
         created = 0
@@ -385,7 +394,7 @@ class ModuleAuto(PluginModuleBase):
             item.save()
             return
 
-        client = self.make_client()
+        client = self.make_auth_client()
         item.status = "DOWNLOADING"
         item.message = ""
         item.save()

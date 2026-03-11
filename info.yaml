@@ -1,5 +1,5 @@
 title: "EBS"
-version: "0.0.3"
+version: "0.0.4"
 package_name: "ebs"
 developer: "njworange"
 description: "EBS TV VOD 다운로더"
