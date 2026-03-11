@@ -148,7 +148,7 @@ class ModelEbsEpisode(ModelBase):
 
     @classmethod
     def make_query(
-        cls, order: str = "desc", search: str = "", option1: str = "all", option2: str = "all"
+        cls, req, order: str = "desc", search: str = "", option1: str = "all", option2: str = "all"
     ):
         with F.app.app_context():
             query = F.db.session.query(cls)
