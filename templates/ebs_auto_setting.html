@@ -1,21 +1,70 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="container-fluid">
-  <div class="row">
-    <div class="col-sm-12">
-      <h3>EBS 자동 수집 설정</h3>
-      <p class="text-muted">일별 VOD 피드 수집 기준과 필터를 설정하는 자리입니다.</p>
-      <table class="table table-bordered table-sm">
-        <tr><th>수집 기준일</th><td>{{ arg['auto_collect_since'] }}</td></tr>
-        <tr><th>페이지 제한</th><td>{{ arg['auto_scan_page_limit'] }}</td></tr>
-        <tr><th>다운로드 모드</th><td>{{ arg['auto_download_mode'] }}</td></tr>
-        <tr><th>화이트리스트</th><td>{{ arg['auto_whitelist_program'] }}</td></tr>
-        <tr><th>블랙리스트</th><td>{{ arg['auto_blacklist_program'] }}</td></tr>
-      </table>
-      <div class="alert alert-info">
-        자동 수집 설정 UI는 골격만 들어간 상태이며, 실제 저장/검증 로직은 후속 구현이 필요합니다.
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOneExecuteBtn', '1회 실행'], ['globalImmediatelyExecuteBtn', '즉시 실행']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+<form id="setting">
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('filter_mode', '필터 모드', true) }}
+    {{ macros.m_tab_head('blacklist', '블랙리스트', false) }}
+    {{ macros.m_tab_head('whitelist', '화이트리스트', false) }}
+    {{ macros.m_tab_head('handling', '다운로드 처리', false) }}
+    {{ macros.m_tab_head('schedule', '스케줄링 & DB', false) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+
+<div class="tab-content" id="nav-tabContent">
+  {{ macros.m_tab_content_start('filter_mode', true) }}
+    {{ macros.setting_radio_with_value('auto_download_mode', '다운로드 모드', [['blacklist', '블랙리스트'], ['whitelist', '화이트리스트']], value=arg['auto_download_mode']) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">현재 모드 안내</label>
+      <div class="col-sm-9">
+        <input id="current_filter_mode_text" type="text" class="form-control" value="" readonly>
+        <small class="form-text text-muted">블랙리스트 모드는 일치 키워드를 제외하고, 화이트리스트 모드는 일치 키워드만 다운로드합니다.</small>
       </div>
     </div>
-  </div>
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('blacklist', false) }}
+    {{ macros.setting_input_textarea('auto_blacklist_program', '제외 프로그램 키워드', value=arg['auto_blacklist_program'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+    {{ macros.setting_input_textarea('auto_blacklist_episode', '제외 에피소드 키워드', value=arg['auto_blacklist_episode'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('whitelist', false) }}
+    {{ macros.setting_input_textarea('auto_whitelist_program', '포함 프로그램 키워드', value=arg['auto_whitelist_program'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+    {{ macros.setting_input_textarea('auto_whitelist_episode', '포함 에피소드 키워드', value=arg['auto_whitelist_episode'], desc=['쉼표(,) 또는 줄바꿈으로 구분']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('handling', false) }}
+    {{ macros.setting_checkbox('auto_allow_preview', '프리뷰(미리보기) 허용', value=arg['auto_allow_preview'], desc='Off : preview URL은 다운로드하지 않음') }}
+    {{ macros.setting_checkbox('auto_download_subtitle', '자막 다운로드', value=arg['auto_download_subtitle'], desc='현재는 준비용 옵션이며 후속 구현 대상입니다.') }}
+    {{ macros.setting_input_int('auto_max_retry', '재시도 횟수', value=arg['auto_max_retry'], min='1') }}
+    {{ macros.setting_checkbox('auto_retry_failed', '스케줄 시 실패 항목 재시도', value=arg['auto_retry_failed']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('schedule', false) }}
+    {{ macros.setting_input_int('auto_scan_page_limit', '최신목록 수집 페이지 수', value=arg['auto_scan_page_limit'], min='1') }}
+    {{ macros.setting_input_text('auto_collect_since', '자동 수집 기준일', value=arg['auto_collect_since'], desc=['이 날짜 이후 방영분만 자동 수집합니다. 형식: YYYY-MM-DD', '비워두면 플러그인 첫 로드시 오늘 날짜로 자동 설정됩니다.']) }}
+    {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
+    {{ macros.setting_input_text('auto_interval', '스케줄링 실행 정보', value=arg['auto_interval'], col='3', desc=['Interval(minute 단위) 또는 Cron 설정']) }}
+    {{ macros.setting_checkbox('auto_auto_start', '시작시 자동실행', value=arg['auto_auto_start']) }}
+  {{ macros.m_tab_content_end() }}
 </div>
+</form>
+
+<script type="text/javascript">
+function update_filter_mode_text() {
+  const currentMode = ($("input[name='auto_download_mode']:checked").val() || 'blacklist');
+  const text = (currentMode === 'whitelist')
+    ? '화이트리스트 모드 (일치 키워드만 다운로드)'
+    : '블랙리스트 모드 (일치 키워드 제외)';
+  $('#current_filter_mode_text').val(text);
+}
+
+$(document).ready(function(){ update_filter_mode_text(); });
+$('body').on('change', "input[name='auto_download_mode']", function(){ update_filter_mode_text(); });
+</script>
+
 {% endblock %}

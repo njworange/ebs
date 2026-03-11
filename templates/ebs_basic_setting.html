@@ -1,20 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="container-fluid">
-  <div class="row">
-    <div class="col-sm-12">
-      <h3>EBS 기본 설정</h3>
-      <p class="text-muted">EBS TV 분석/다운로드에 사용할 기본 설정입니다.</p>
-      <table class="table table-bordered table-sm">
-        <tr><th>저장 경로</th><td>{{ arg['basic_save_path'] }}</td></tr>
-        <tr><th>화질 코드</th><td>{{ arg['basic_quality'] }}</td></tr>
-        <tr><th>User-Agent</th><td>{{ arg['basic_user_agent'] }}</td></tr>
-        <tr><th>쿠키</th><td><code>{{ arg['basic_cookie'] }}</code></td></tr>
-      </table>
-      <div class="alert alert-info">
-        이 화면은 골격만 준비된 상태입니다. 실제 설정 저장 UI는 다음 단계에서 구현합니다.
-      </div>
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+<form id="setting">
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('basic', '기본', true) }}
+    {{ macros.m_tab_head('auth', '쿠키', false) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+
+<div class="tab-content" id="nav-tabContent">
+  {{ macros.m_tab_content_start('basic', true) }}
+    {{ macros.setting_input_text('basic_save_path', '저장 폴더', value=arg['basic_save_path'], desc=['절대경로 또는 {PATH_DATA}/download 같은 데이터 폴더 기준 상대 경로']) }}
+    {{ macros.setting_select('basic_quality', '기본 화질', [['M50', '1080p'], ['M20', '720p'], ['M10', '480p'], ['M05', '360p']], col='3', value=arg['basic_quality']) }}
+    {{ macros.setting_input_text('basic_user_agent', '사용자 에이전트', value=arg['basic_user_agent'], desc=['특수한 경우가 아니면 기본값 유지 권장']) }}
+  {{ macros.m_tab_content_end() }}
+
+  {{ macros.m_tab_content_start('auth', false) }}
+    {{ macros.setting_input_textarea('basic_cookie', '로그인 쿠키', value=arg['basic_cookie'], desc=['브라우저에서 가져온 Cookie 헤더 값을 그대로 넣을 수 있습니다.', 'preview 차단이나 로그인 필요 콘텐츠는 이 쿠키가 있어야 전체 길이 URL을 얻을 가능성이 높습니다.']) }}
+    <div class="alert alert-info mt-3 mb-0">
+      AniKids 플러그인처럼 자동 로그인/쿠키 갱신은 아직 넣지 않았습니다. 현재는 수동 쿠키 입력 방식입니다.
     </div>
-  </div>
+  {{ macros.m_tab_content_end() }}
 </div>
+</form>
+
 {% endblock %}
