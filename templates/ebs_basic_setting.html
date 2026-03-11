@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid">
+  <div class="row">
+    <div class="col-sm-12">
+      <h3>EBS 기본 설정</h3>
+      <p class="text-muted">EBS TV 분석/다운로드에 사용할 기본 설정입니다.</p>
+      <table class="table table-bordered table-sm">
+        <tr><th>저장 경로</th><td>{{ arg['basic_save_path'] }}</td></tr>
+        <tr><th>화질 코드</th><td>{{ arg['basic_quality'] }}</td></tr>
+        <tr><th>User-Agent</th><td>{{ arg['basic_user_agent'] }}</td></tr>
+        <tr><th>쿠키</th><td><code>{{ arg['basic_cookie'] }}</code></td></tr>
+      </table>
+      <div class="alert alert-info">
+        이 화면은 골격만 준비된 상태입니다. 실제 설정 저장 UI는 다음 단계에서 구현합니다.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

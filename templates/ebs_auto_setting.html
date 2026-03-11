@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid">
+  <div class="row">
+    <div class="col-sm-12">
+      <h3>EBS 자동 수집 설정</h3>
+      <p class="text-muted">일별 VOD 피드 수집 기준과 필터를 설정하는 자리입니다.</p>
+      <table class="table table-bordered table-sm">
+        <tr><th>수집 기준일</th><td>{{ arg['auto_collect_since'] }}</td></tr>
+        <tr><th>페이지 제한</th><td>{{ arg['auto_scan_page_limit'] }}</td></tr>
+        <tr><th>다운로드 모드</th><td>{{ arg['auto_download_mode'] }}</td></tr>
+        <tr><th>화이트리스트</th><td>{{ arg['auto_whitelist_program'] }}</td></tr>
+        <tr><th>블랙리스트</th><td>{{ arg['auto_blacklist_program'] }}</td></tr>
+      </table>
+      <div class="alert alert-info">
+        자동 수집 설정 UI는 골격만 들어간 상태이며, 실제 저장/검증 로직은 후속 구현이 필요합니다.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

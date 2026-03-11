@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid">
+  <div class="row">
+    <div class="col-sm-12">
+      <h3>EBS 자동 목록</h3>
+      <p class="text-muted">일별 VOD 수집 결과와 다운로드 큐를 보여주는 목록 화면 골격입니다.</p>
+      <div class="mb-2">
+        <button id="collect_now_btn" class="btn btn-primary btn-sm">수집+큐 추가</button>
+        <button id="queue_status_btn" class="btn btn-outline-secondary btn-sm">큐 상태</button>
+      </div>
+      <div id="auto_result" class="alert alert-secondary">아직 수집 결과가 없습니다.</div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+$("body").on('click', '#collect_now_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('collect_now', null, null, null, function(ret){
+    $('#auto_result').text(ret.msg || '수집 완료');
+    notify(ret.msg || '수집 완료', ret.ret === 'success' ? 'success' : 'warning');
+  });
+});
+
+$("body").on('click', '#queue_status_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('queue_status', null, null, null, function(ret){
+    $('#auto_result').text(ret.msg || '큐 상태');
+    notify(ret.msg || '큐 상태', ret.ret === 'success' ? 'success' : 'warning');
+  });
+});
+</script>
+{% endblock %}
