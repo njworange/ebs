@@ -491,6 +491,19 @@ class ModuleAuto(PluginModuleBase):
             item.is_preview = client.is_preview_url(play_url) or int(info.get("preview_end") or 0) > 0
             allow_preview = P.ModelSetting.get_bool(f"{self.name}_allow_preview")
             if item.is_preview and not allow_preview:
+                P.logger.warning(
+                    "[ebs] preview blocked: id=%s remote=%s/%s/%s is_login=%s buy_state=%s quality=%s quality_count=%s preview_end=%s show=%s",
+                    item.id,
+                    item.remote_program_id,
+                    item.remote_episode_id,
+                    item.remote_media_id,
+                    item.is_login,
+                    item.buy_state,
+                    item.quality_code,
+                    len(info.get("qualities") or {}),
+                    info.get("preview_end") or 0,
+                    info.get("show_url") or item.show_url,
+                )
                 item.status = "PREVIEW_BLOCKED"
                 item.retry += 1
                 item.message = "프리뷰 URL 감지. 로그인/구독 쿠키를 확인하세요."

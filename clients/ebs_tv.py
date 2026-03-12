@@ -581,7 +581,7 @@ class EbsTvClient:
                     pass
         preview_match = PREVIEW_RANGE_RE.search(text)
         preview_end = int(preview_match.group("end")) if preview_match else 0
-        return {
+        result = {
             "is_login": vod_state.get("isLogin", "N") == "Y",
             "buy_state": vod_state.get("buyState", ""),
             "qualities": qualities,
@@ -589,6 +589,25 @@ class EbsTvClient:
             "show_url": resolved_show_url,
             "preview_end": preview_end,
         }
+        try:
+            show_url_changed = (_safe_url_for_message(resolved_show_url) != _safe_url_for_message(show_url))
+            if (not qualities) or preview_end > 0 or (result["is_login"] is False) or show_url_changed:
+                logger.debug(
+                    "[PLAY] resolve_play_info remote=%s/%s/%s final=%s is_login=%s buy_state=%s quality_count=%s quality_codes=%s preview_end=%s show_url_changed=%s",
+                    remote_program_id,
+                    remote_episode_id,
+                    remote_media_id,
+                    _safe_url_for_message(resolved_show_url),
+                    "Y" if result["is_login"] else "N",
+                    result["buy_state"],
+                    len(qualities),
+                    sorted(list(qualities.keys())),
+                    preview_end,
+                    show_url_changed,
+                )
+        except Exception:
+            pass
+        return result
 
     def _extract_qualities(self, text: str) -> dict[str, str]:
         qualities: dict[str, str] = {}
