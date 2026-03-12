@@ -139,13 +139,13 @@ class EbsTvClient:
                 client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
                 login_state = client.quick_login_state()
                 return {
-                    "success": login_state != "N",
+                    "success": login_state == "Y",
                     "message": (
                         f"{browser_name} 브라우저에서 쿠키를 가져왔습니다. (isLogin: {login_state})"
                         if login_state != "N"
                         else f"{browser_name} 브라우저 쿠키를 읽었지만 로그인 상태가 아닙니다. (isLogin: {login_state})"
                     ),
-                    "cookie": cookie_header if login_state != "N" else "",
+                    "cookie": cookie_header if login_state == "Y" else "",
                 }
             except Exception as e:
                 errors.append(f"{browser_name}: {type(e).__name__} - {e}")
@@ -174,19 +174,29 @@ class EbsTvClient:
         client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
         login_state = client.quick_login_state()
         return {
-            "success": login_state != "N",
+            "success": login_state == "Y",
             "message": (
                 f"쿠키 파일에서 쿠키를 가져왔습니다. (isLogin: {login_state})"
                 if login_state != "N"
                 else f"쿠키 파일에서 쿠키를 읽었지만 로그인 상태가 아닙니다. (isLogin: {login_state})"
             ),
-            "cookie": cookie_header if login_state != "N" else "",
+            "cookie": cookie_header if login_state == "Y" else "",
         }
 
     def quick_login_state(self) -> str:
         probe_url = f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016"
         try:
-            text = self.get_text(probe_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+            response = self._safe_session_get(
+                self.session,
+                probe_url,
+                headers={"Referer": f"{TV_PROGRAM_URL}?tab=vod"},
+                timeout=(5, 15),
+                retries=2,
+            )
+            text = response.text or ""
+            final_url = response.url or probe_url
+            if _is_sso_or_login_url(final_url):
+                return "N"
         except Exception:
             return "미검출"
         vod_state = self._parse_vod_state(text)
@@ -209,28 +219,19 @@ class EbsTvClient:
                 }
             )
 
-            login_page_url = f"{ANIKIDS_BASE_URL}/login?{urlencode({'returnUrl': TV_PROGRAM_URL + '?tab=vod'})}"
-            login_resp = None
-            last_error = None
-            for _ in range(2):
-                try:
-                    login_resp = session.get(
-                        login_page_url,
-                        timeout=timeout,
-                        allow_redirects=True,
-                        headers={"Referer": ANIKIDS_BASE_URL},
-                    )
-                    last_error = None
-                    break
-                except requests.exceptions.Timeout as e:
-                    last_error = e
-                    time.sleep(1)
-            if login_resp is None:
-                raise last_error or requests.exceptions.Timeout("login page timeout")
+            return_url = TV_PROGRAM_URL + "?tab=vod"
+            login_page_url = f"{BASE_URL}/login?{urlencode({'returnUrl': return_url, 'j_returnurl': return_url})}"
+            login_resp = EbsTvClient._safe_session_get(
+                session,
+                login_page_url,
+                headers={"Referer": BASE_URL},
+                timeout=(5, 15),
+                retries=2,
+            )
             login_page_text = login_resp.text or ""
             login_page_final = login_resp.url or login_page_url
 
-            form_action = f"{ANIKIDS_BASE_URL}/sso/login"
+            form_action = ""
             form_fields: dict[str, str] = {}
             frm_match = re.search(r'<form\b[^>]*\bid=["\']frm["\'][^>]*>(.*?)</form>', login_page_text, re.I | re.S)
             if frm_match:
@@ -245,6 +246,8 @@ class EbsTvClient:
                     inp_value = attrs.get("value", "")
                     if inp_type == "hidden" and inp_name:
                         form_fields[inp_name] = inp_value
+            if not form_action:
+                return {"success": False, "message": "로그인 폼 action을 찾지 못했습니다.", "cookie": ""}
 
             payload = dict(form_fields)
             payload["i"] = user_id
@@ -257,7 +260,7 @@ class EbsTvClient:
             response = session.post(
                 form_action,
                 data=payload,
-                timeout=timeout,
+                timeout=(10, 30),
                 allow_redirects=True,
                 headers={"Referer": login_page_final, "Origin": _origin_for_url(login_page_final)},
             )
@@ -325,9 +328,16 @@ class EbsTvClient:
                     if origin:
                         submit_headers["Origin"] = origin
                     submit_url = action or current_url
-                    response = session.post(submit_url, data=post_data, timeout=timeout, allow_redirects=True, headers=submit_headers)
+                    response = session.post(submit_url, data=post_data, timeout=(10, 30), allow_redirects=True, headers=submit_headers)
                 else:
-                    response = session.get(action or current_url, params=post_data, timeout=timeout, allow_redirects=True, headers=submit_headers)
+                    response = EbsTvClient._safe_session_get(
+                        session,
+                        action or current_url,
+                        params=post_data,
+                        headers=submit_headers,
+                        timeout=(5, 15),
+                        retries=2,
+                    )
                 final_url = response.url or final_url
 
             response_text = response.text or ""
@@ -355,15 +365,20 @@ class EbsTvClient:
             login_state = "N"
             if cookie_header:
                 try:
-                    tv_probe_response = session.get(
+                    tv_probe_response = EbsTvClient._safe_session_get(
+                        session,
                         f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016",
-                        timeout=timeout,
-                        allow_redirects=True,
                         headers={"Referer": TV_PROGRAM_URL + "?tab=vod"},
+                        timeout=(5, 15),
+                        retries=2,
                     )
                     probe_text = tv_probe_response.text or ""
-                    probe_state = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)._parse_vod_state(probe_text)
-                    login_state = probe_state.get("isLogin", "미검출")
+                    probe_final_url = tv_probe_response.url or ""
+                    if not _is_sso_or_login_url(probe_final_url):
+                        probe_state = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)._parse_vod_state(probe_text)
+                        login_state = probe_state.get("isLogin", "미검출")
+                    else:
+                        login_state = "N"
                     cookie_header = _join_cookie_header(session.cookies)
                 except Exception:
                     login_state = "미검출"
@@ -382,6 +397,29 @@ class EbsTvClient:
         except Exception as e:
             logger.exception("[LOGIN] 로그인 처리 중 예외 발생")
             return {"success": False, "message": f"로그인 처리 중 오류: {e}", "cookie": ""}
+
+    @staticmethod
+    def _safe_session_get(
+        session: requests.Session,
+        url: str,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        timeout: tuple[int, int] = (5, 15),
+        retries: int = 2,
+    ) -> requests.Response:
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                response = session.get(url, params=params, timeout=timeout, allow_redirects=True, headers=headers or {})
+                response.raise_for_status()
+                return response
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
+        raise last_error or requests.exceptions.Timeout("session get timeout")
 
     def get_text(self, url: str, referer: str | None = None) -> str:
         response = self.get_response(url, referer=referer)
