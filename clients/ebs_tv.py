@@ -554,13 +554,20 @@ class EbsTvClient:
         self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
     ) -> dict[str, str]:
         show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
-        response = self.get_response(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        response = self._safe_session_get(
+            self.session,
+            show_url,
+            headers={"Referer": f"{TV_PROGRAM_URL}?tab=vod"},
+            timeout=(15, max(self.timeout, 45)),
+            retries=2,
+        )
         text = response.text or ""
         option = self._parse_vod_option(text)
         course_name = (option.get("courseNm") or "").strip()
         program_title = course_name if (course_name and (not _title_looks_generic(course_name))) else self._extract_program_title_from_text(text)
         if not program_title:
             program_title = course_name
+        display_title = program_title or self._extract_display_title_from_text(text)
         episode_no = self._extract_episode_no_from_text(text)
         if not episode_no:
             for candidate in [
@@ -571,11 +578,19 @@ class EbsTvClient:
                 episode_no = _extract_episode_no(candidate)
                 if episode_no:
                     break
+        if not episode_no:
+            episode_no = self._resolve_episode_no_from_vod_list(
+                remote_program_id=remote_program_id,
+                remote_episode_id=remote_episode_id,
+                remote_media_id=remote_media_id,
+                display_title=display_title or program_title or remote_program_id,
+                prod_id=(option.get("prodId") or "").strip(),
+            )
         return {
             "thumbnail": self._extract_thumbnail_from_text(text),
             "episode_no": episode_no,
             "program_title": program_title,
-            "display_title": program_title or self._extract_display_title_from_text(text),
+            "display_title": display_title,
         }
 
     def analyze_program_url(self, url_or_code: str, step_id: str | None = None) -> dict[str, Any]:
@@ -654,11 +669,15 @@ class EbsTvClient:
     def _assign_episode_numbers(self, episodes: list[EpisodeRow]) -> list[EpisodeRow]:
         if not episodes:
             return episodes
-        if any((ep.episode_no or "").strip() for ep in episodes):
+        if all((ep.episode_no or "").strip() for ep in episodes):
             return episodes
         ordered = sorted(episodes, key=lambda ep: (_date_key(ep.release_date), ep.remote_episode_id))
-        for idx, episode in enumerate(ordered, start=1):
-            episode.episode_no = str(idx)
+        next_idx = 1
+        for episode in ordered:
+            if (episode.episode_no or "").strip():
+                continue
+            episode.episode_no = str(next_idx)
+            next_idx += 1
         episodes.sort(key=lambda ep: (_date_key(ep.release_date), ep.remote_episode_id), reverse=True)
         return episodes
 
@@ -805,6 +824,7 @@ class EbsTvClient:
         display_title: str,
         prod_id: str,
         max_pages: int = 300,
+        timeout: int | None = None,
     ) -> list[EpisodeRow]:
         first_page = self._post_show_vod_list(
             remote_program_id=remote_program_id,
@@ -812,6 +832,7 @@ class EbsTvClient:
             remote_media_id=remote_media_id,
             page_num=1,
             prod_id=prod_id,
+            timeout=timeout,
         )
         total_pages = self._extract_total_pages(first_page)
         total_pages = max(1, min(total_pages, max_pages))
@@ -825,6 +846,7 @@ class EbsTvClient:
                 remote_media_id=remote_media_id,
                 page_num=page_num,
                 prod_id=prod_id,
+                timeout=timeout,
             )
             page_rows = 0
             for match in VOD_LIST_ITEM_RE.finditer(text):
@@ -871,8 +893,11 @@ class EbsTvClient:
         remote_media_id: str,
         page_num: int,
         prod_id: str,
+        timeout: int | None = None,
     ) -> str:
-        response = self.session.post(
+        request_timeout = max(int(timeout or self.timeout or 15), 10)
+        response = self._safe_session_post(
+            self.session,
             TV_SHOW_VOD_LIST_API,
             data={
                 "courseId": remote_program_id,
@@ -888,10 +913,38 @@ class EbsTvClient:
                 "vodProdId": prod_id,
             },
             headers={"X-Requested-With": "XMLHttpRequest", "Referer": self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)},
-            timeout=self.timeout,
+            timeout=(15, max(request_timeout, 45)),
+            retries=2,
         )
-        response.raise_for_status()
         return response.text or ""
+
+    def _resolve_episode_no_from_vod_list(
+        self,
+        remote_program_id: str,
+        remote_episode_id: str,
+        remote_media_id: str,
+        display_title: str,
+        prod_id: str,
+    ) -> str:
+        if (not remote_episode_id) or (not prod_id):
+            return ""
+        try:
+            episodes = self._collect_show_episode_pages(
+                remote_program_id=remote_program_id,
+                remote_episode_id=remote_episode_id,
+                remote_media_id=remote_media_id,
+                display_title=display_title,
+                prod_id=prod_id,
+                max_pages=20,
+                timeout=max(self.timeout * 3, 45),
+            )
+        except Exception:
+            return ""
+        episodes = self._assign_episode_numbers(episodes)
+        for episode in episodes:
+            if episode.remote_episode_id == remote_episode_id:
+                return (episode.episode_no or "").strip()
+        return ""
 
     def _normalize_input(self, value: str) -> tuple[str, str, str]:
         value = (value or "").strip()
