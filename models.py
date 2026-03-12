@@ -5,9 +5,14 @@ import re
 from sqlalchemy import desc, or_
 
 from plugin.model_base import ModelBase
-from tool import ToolUtil
-
 from .setup import F, P
+
+
+def _make_safe_filename(value: str) -> str:
+    text = (value or "").strip()
+    text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or "EBS"
 
 
 class ModelEbsEpisode(ModelBase):
@@ -244,7 +249,7 @@ class ModelEbsEpisode(ModelBase):
         quality_label = {"M50": "1080p", "M20": "720p", "M10": "480p", "M05": "360p"}.get(
             quality_code, quality_code or "NA"
         )
-        safe = ToolUtil.make_safe_filename(title)
+        safe = _make_safe_filename(title)
         return f"{safe}.{ep_part}.{date_digits}.{quality_label}-EBS.mp4"
 
     def get_target_path(self) -> pathlib.Path:
