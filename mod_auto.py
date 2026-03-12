@@ -4,6 +4,7 @@ import re
 import threading
 
 import flask
+import requests
 from sqlalchemy import inspect, text
 
 from plugin.create_plugin import PluginBase
@@ -453,6 +454,17 @@ class ModuleAuto(PluginModuleBase):
                         item.remote_episode_id,
                         item.remote_media_id,
                     )
+                except requests.exceptions.Timeout:
+                    if attempt == 0:
+                        P.logger.warning(
+                            "[ebs] resolve_play_info timeout: retry once without cookie refresh: id=%s remote=%s/%s/%s",
+                            item.id,
+                            item.remote_program_id,
+                            item.remote_episode_id,
+                            item.remote_media_id,
+                        )
+                        continue
+                    raise
                 except Exception as e:
                     if attempt == 0:
                         refreshed, refresh_msg = self.refresh_cookie_with_saved_account(force=False)

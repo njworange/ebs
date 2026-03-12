@@ -259,11 +259,12 @@ class EbsTvClient:
             payload.setdefault("snsSite", "")
             payload.setdefault("j_logintype", "")
 
-            response = session.post(
+            response = EbsTvClient._safe_session_post(
+                session,
                 form_action,
                 data=payload,
-                timeout=(10, 30),
-                allow_redirects=True,
+                timeout=(15, max(timeout, 45)),
+                retries=2,
                 headers={"Referer": login_page_final, "Origin": _origin_for_url(login_page_final)},
             )
 
@@ -330,7 +331,14 @@ class EbsTvClient:
                     if origin:
                         submit_headers["Origin"] = origin
                     submit_url = action or current_url
-                    response = session.post(submit_url, data=post_data, timeout=(10, 30), allow_redirects=True, headers=submit_headers)
+                    response = EbsTvClient._safe_session_post(
+                        session,
+                        submit_url,
+                        data=post_data,
+                        timeout=(15, max(timeout, 45)),
+                        retries=2,
+                        headers=submit_headers,
+                    )
                 else:
                     response = EbsTvClient._safe_session_get(
                         session,
@@ -413,6 +421,29 @@ class EbsTvClient:
                 raise
         raise last_error or requests.exceptions.Timeout("session get timeout")
 
+    @staticmethod
+    def _safe_session_post(
+        session: requests.Session,
+        url: str,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: tuple[int, int] = (10, 30),
+        retries: int = 2,
+    ) -> requests.Response:
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                response = session.post(url, data=data, timeout=timeout, allow_redirects=True, headers=headers or {})
+                response.raise_for_status()
+                return response
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
+        raise last_error or requests.exceptions.Timeout("session post timeout")
+
     def _probe_login_state(self, session: requests.Session, timeout: int | None = None) -> tuple[str, str]:
         probe_targets = [
             (TV_SHOW_LOGIN_PROBE_URL, f"{TV_PROGRAM_URL}?tab=vod"),
@@ -457,9 +488,13 @@ class EbsTvClient:
         headers = {}
         if referer:
             headers["Referer"] = referer
-        response = self.session.get(url, timeout=self.timeout, headers=headers, allow_redirects=True)
-        response.raise_for_status()
-        return response
+        return self._safe_session_get(
+            self.session,
+            url,
+            headers=headers,
+            timeout=(10, max(self.timeout, 30)),
+            retries=2,
+        )
 
     def collect_daily_vods(self, page: int = 1) -> list[dict[str, Any]]:
         response = self.session.post(
