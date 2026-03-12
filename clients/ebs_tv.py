@@ -497,7 +497,8 @@ class EbsTvClient:
         )
 
     def collect_daily_vods(self, page: int = 1) -> list[dict[str, Any]]:
-        response = self.session.post(
+        response = self._safe_session_post(
+            self.session,
             TV_PROGRAM_LIST_API,
             data={
                 "srchBrdc": "ING,END",
@@ -512,9 +513,9 @@ class EbsTvClient:
                 "frmWeek": "",
             },
             headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{TV_PROGRAM_URL}?tab=vod"},
-            timeout=self.timeout,
+            timeout=(10, max(self.timeout, 30)),
+            retries=2,
         )
-        response.raise_for_status()
         text = response.text or ""
         rows: list[dict[str, Any]] = []
         for match in LIST_ITEM_RE.finditer(text):

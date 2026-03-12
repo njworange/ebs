@@ -272,7 +272,11 @@ class ModuleAuto(PluginModuleBase):
         skipped_unsupported = 0
         skipped_old = 0
         for page in range(1, page_limit + 1):
-            rows = client.collect_daily_vods(page=page)
+            try:
+                rows = client.collect_daily_vods(page=page)
+            except requests.exceptions.Timeout as e:
+                P.logger.warning("[ebs] collect_daily_vods timeout: page=%s (%s)", page, e)
+                break
             if not rows:
                 break
             P.logger.info("[ebs] collect_daily_vods page=%s rows=%s", page, len(rows))
