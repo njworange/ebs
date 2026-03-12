@@ -239,9 +239,6 @@ class ModuleAuto(PluginModuleBase):
         )
 
     def make_auth_client(self) -> EbsTvClient:
-        cookie = (P.ModelSetting.get("basic_cookie") or "").strip()
-        if (not cookie) and P.ModelSetting.get_bool("basic_cookie_refresh"):
-            self.refresh_cookie_with_saved_account(force=False)
         return EbsTvClient(
             cookie=(P.ModelSetting.get("basic_cookie") or "").strip(),
             user_agent=P.ModelSetting.get("basic_user_agent") or "Mozilla/5.0",
@@ -289,7 +286,7 @@ class ModuleAuto(PluginModuleBase):
                 if (not remote_program_id) or (not remote_episode_id) or (not remote_media_id):
                     skipped_unsupported += 1
                     continue
-                if row.get("source_type") == "tv_show":
+                if row.get("source_type") == "tv_show" and str(row.get("show_url") or "").startswith("https://www.ebs.co.kr/tv/show"):
                     if (not row.get("thumbnail")) or (not row.get("episode_no")):
                         try:
                             metadata = client.fetch_show_metadata(remote_program_id, remote_episode_id, remote_media_id)
@@ -447,11 +444,40 @@ class ModuleAuto(PluginModuleBase):
         item.save()
 
         try:
-            info = client.resolve_play_info(
-                item.remote_program_id,
-                item.remote_episode_id,
-                item.remote_media_id,
-            )
+            info = None
+            refresh_msg = ""
+            for attempt in range(2):
+                try:
+                    info = client.resolve_play_info(
+                        item.remote_program_id,
+                        item.remote_episode_id,
+                        item.remote_media_id,
+                    )
+                except Exception as e:
+                    if attempt == 0:
+                        refreshed, refresh_msg = self.refresh_cookie_with_saved_account(force=False)
+                        if refreshed:
+                            client = self.make_auth_client()
+                            continue
+                    raise
+
+                preferred_quality = P.ModelSetting.get("basic_quality") or "M50"
+                quality_code, play_url = self.pick_quality(info.get("qualities") or {}, preferred_quality)
+                needs_refresh = False
+                if attempt == 0:
+                    if (not quality_code) or (not play_url):
+                        needs_refresh = True
+                    elif (info.get("is_login") is False) and P.ModelSetting.get_bool("basic_cookie_refresh"):
+                        needs_refresh = True
+                if needs_refresh:
+                    refreshed, refresh_msg = self.refresh_cookie_with_saved_account(force=False)
+                    if refreshed:
+                        client = self.make_auth_client()
+                        continue
+                break
+
+            if info is None:
+                raise Exception("재생 정보 확인에 실패했습니다.")
             item.is_login = "Y" if info.get("is_login") else "N"
             item.buy_state = info.get("buy_state") or ""
 
@@ -465,26 +491,11 @@ class ModuleAuto(PluginModuleBase):
             item.is_preview = client.is_preview_url(play_url) or int(info.get("preview_end") or 0) > 0
             allow_preview = P.ModelSetting.get_bool(f"{self.name}_allow_preview")
             if item.is_preview and not allow_preview:
-                refreshed, refresh_msg = self.refresh_cookie_with_saved_account(force=False)
-                if refreshed:
-                    client = self.make_auth_client()
-                    info = client.resolve_play_info(
-                        item.remote_program_id,
-                        item.remote_episode_id,
-                        item.remote_media_id,
-                    )
-                    quality_code, play_url = self.pick_quality(info.get("qualities") or {}, preferred_quality)
-                    item.quality_code = quality_code or item.quality_code
-                    item.play_url = play_url or item.play_url
-                    item.is_login = "Y" if info.get("is_login") else "N"
-                    item.buy_state = info.get("buy_state") or item.buy_state
-                    item.is_preview = (client.is_preview_url(play_url or "") or int(info.get("preview_end") or 0) > 0)
-                if item.is_preview and not allow_preview:
-                    item.status = "PREVIEW_BLOCKED"
-                    item.retry += 1
-                    item.message = refresh_msg if refreshed else "프리뷰 URL 감지. 로그인/구독 쿠키를 확인하세요."
-                    item.save()
-                    return
+                item.status = "PREVIEW_BLOCKED"
+                item.retry += 1
+                item.message = "프리뷰 URL 감지. 로그인/구독 쿠키를 확인하세요."
+                item.save()
+                return
 
             save_path = ToolUtil.make_path(P.ModelSetting.get("basic_save_path"))
             pathlib.Path(save_path).mkdir(parents=True, exist_ok=True)
@@ -539,6 +550,7 @@ class ModuleAuto(PluginModuleBase):
             item.message = "다운로드 완료"
             item.save()
         except Exception as e:
+            P.logger.exception("[ebs] download_one failed: id=%s, remote=%s/%s/%s", item.id, item.remote_program_id, item.remote_episode_id, item.remote_media_id)
             item.retry += 1
             item.status = "FAILED"
             item.message = str(e)
