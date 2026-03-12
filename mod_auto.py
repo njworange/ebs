@@ -66,6 +66,11 @@ def parse_int_arg(value: str) -> int | None:
         return None
 
 
+def title_needs_upgrade(title: str) -> bool:
+    norm = normalize_text(title)
+    return (norm in {"", "ebs", "ebs애니키즈", "애니키즈", "ebsenglish", "ebsenglishtv"}) or norm.isdigit()
+
+
 class ModuleAuto(PluginModuleBase):
     download_thread = None
 
@@ -287,14 +292,22 @@ class ModuleAuto(PluginModuleBase):
                 if (not remote_program_id) or (not remote_episode_id) or (not remote_media_id):
                     skipped_unsupported += 1
                     continue
-                if row.get("source_type") == "tv_show" and str(row.get("show_url") or "").startswith("https://www.ebs.co.kr/tv/show"):
-                    if (not row.get("thumbnail")) or (not row.get("episode_no")):
+                if row.get("source_type") == "tv_show":
+                    needs_metadata = (
+                        (not row.get("thumbnail"))
+                        or (not row.get("episode_no"))
+                        or title_needs_upgrade(row.get("program_title") or "")
+                        or (row.get("display_title") or "") == (row.get("episode_title") or "")
+                    )
+                    if needs_metadata:
                         try:
                             metadata = client.fetch_show_metadata(remote_program_id, remote_episode_id, remote_media_id)
                             if metadata.get("thumbnail") and not row.get("thumbnail"):
                                 row["thumbnail"] = metadata.get("thumbnail")
                             if metadata.get("episode_no") and not row.get("episode_no"):
                                 row["episode_no"] = metadata.get("episode_no")
+                            if metadata.get("program_title") and title_needs_upgrade(row.get("program_title") or ""):
+                                row["program_title"] = metadata.get("program_title")
                             if metadata.get("display_title"):
                                 row["display_title"] = metadata.get("display_title")
                         except Exception as e:
@@ -314,7 +327,15 @@ class ModuleAuto(PluginModuleBase):
                     if row.get("episode_no") and not item.episode_no:
                         item.episode_no = row.get("episode_no") or ""
                         updated = True
-                    if row.get("display_title") and (not item.display_title):
+                    if row.get("program_title") and title_needs_upgrade(item.program_title or ""):
+                        item.program_title = row.get("program_title") or item.program_title
+                        updated = True
+                    if row.get("display_title") and (
+                        (not item.display_title)
+                        or (item.display_title == item.episode_title)
+                        or title_needs_upgrade(item.display_title or "")
+                        or normalize_text(item.display_title or "") == normalize_text(item.remote_program_id or "")
+                    ):
                         item.display_title = row.get("display_title") or item.display_title
                         updated = True
                     if updated:

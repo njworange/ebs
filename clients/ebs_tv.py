@@ -554,10 +554,26 @@ class EbsTvClient:
         show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
         response = self.get_response(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
         text = response.text or ""
+        option = self._parse_vod_option(text)
+        course_name = (option.get("courseNm") or "").strip()
+        program_title = course_name if (course_name and (not _title_looks_generic(course_name))) else self._extract_program_title_from_text(text)
+        if not program_title:
+            program_title = course_name
+        episode_no = self._extract_episode_no_from_text(text)
+        if not episode_no:
+            for candidate in [
+                option.get("stepNm") or "",
+                option.get("lectNm") or "",
+                self._extract_episode_title_from_text(text),
+            ]:
+                episode_no = _extract_episode_no(candidate)
+                if episode_no:
+                    break
         return {
             "thumbnail": self._extract_thumbnail_from_text(text),
-            "episode_no": self._extract_episode_no_from_text(text),
-            "display_title": self._extract_display_title_from_text(text),
+            "episode_no": episode_no,
+            "program_title": program_title,
+            "display_title": program_title or self._extract_display_title_from_text(text),
         }
 
     def analyze_program_url(self, url_or_code: str, step_id: str | None = None) -> dict[str, Any]:
@@ -964,9 +980,9 @@ class EbsTvClient:
 
     def _extract_episode_no_from_text(self, text: str) -> str:
         for pattern in [
-            r"<p class=\"view\">\s*(?P<num>\d+)화\b",
-            r"<strong[^>]*>\s*(?P<num>\d+)화\b",
-            r"<title>[^<]*?(?P<num>\d+)화",
+            r"<p class=\"view\">[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)\b",
+            r"<strong[^>]*>[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)\b",
+            r"<title>[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)",
         ]:
             match = re.search(pattern, text or "", re.I)
             if match:
@@ -974,11 +990,23 @@ class EbsTvClient:
         return ""
 
     def _extract_display_title_from_text(self, text: str) -> str:
-        match = re.search(r"<meta\s+property=\"og:title\"\s+content=\"(?P<title>[^\"]+)\"", text or "", re.I)
-        if match:
-            title = html.unescape(match.group("title") or "")
-            title = title.split("/")[0].strip()
-            return title
+        program_title = self._extract_program_title_from_text(text)
+        if program_title:
+            return program_title
+        return ""
+
+    def _extract_program_title_from_text(self, text: str) -> str:
+        parts = _extract_og_title_parts(text)
+        if len(parts) >= 2:
+            return parts[-1]
+        if parts:
+            return parts[0]
+        return ""
+
+    def _extract_episode_title_from_text(self, text: str) -> str:
+        parts = _extract_og_title_parts(text)
+        if len(parts) >= 2:
+            return parts[0]
         return ""
 
     def _extract_detail_show_url(self, text: str) -> str:
@@ -1216,12 +1244,29 @@ def _strip_html_preserve_text(text: str) -> str:
     return text.strip()
 
 
+def _extract_og_title_parts(text: str) -> list[str]:
+    match = re.search(r"<meta\s+[^>]*property=[\"']og:title[\"'][^>]*content=[\"'](?P<title>[^\"']+)", text or "", re.I)
+    if not match:
+        return []
+    title = html.unescape(match.group("title") or "")
+    if " / " in title:
+        parts = title.split(" / ")
+    else:
+        parts = title.split("/")
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _title_looks_generic(title: str) -> bool:
+    norm = re.sub(r"\s+", "", (title or "").strip().lower())
+    return norm in {"", "ebs", "ebs애니키즈", "애니키즈", "ebsenglish", "ebsenglishtv"} or norm.isdigit()
+
+
 def _extract_episode_no(title: str) -> str:
     title = html.unescape(title or "")
-    match = re.match(r"\s*(\d+)\s*(?:회|화|편)\b", title)
+    match = re.search(r"(?:^|\s|\()제?\s*(\d+)\s*(?:회|화|편|부|강)\b", title)
     if match:
         return match.group(1)
-    match = re.match(r"\s*제\s*(\d+)\s*(?:회|화|편)", title)
+    match = re.search(r"(?:episode|ep)\s*[-.]?\s*(\d+)\s*(?:회|화|편|부|강)?\b", title, re.I)
     if match:
         return match.group(1)
     return ""
