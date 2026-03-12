@@ -309,6 +309,18 @@ class ModuleAuto(PluginModuleBase):
                             )
                 item = ModelEbsEpisode.get_by_keys(remote_program_id, remote_episode_id, remote_media_id)
                 if item:
+                    updated = False
+                    if row.get("thumbnail") and not item.thumbnail:
+                        item.thumbnail = row.get("thumbnail") or ""
+                        updated = True
+                    if row.get("episode_no") and not item.episode_no:
+                        item.episode_no = row.get("episode_no") or ""
+                        updated = True
+                    if row.get("display_title") and (not item.display_title):
+                        item.display_title = row.get("display_title") or item.display_title
+                        updated = True
+                    if updated:
+                        item.save()
                     continue
                 item = ModelEbsEpisode(remote_program_id, remote_episode_id, remote_media_id)
                 item.set_info(

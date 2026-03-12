@@ -37,13 +37,16 @@ VOD_LIST_ITEM_RE = re.compile(
 )
 VOD_PAGE_RE = re.compile(r"<strong>(?P<current>\d+)</strong>\s*/\s*(?P<total>\d+)")
 QUALITY_RE = re.compile(
-    r"\{code:\s*'(?P<code>M\d+)',\s*label:\s*'(?P<label>[^']*)',\s*src:\s*'(?P<src>[^']+)'",
+    r"\{\s*code\s*:\s*['\"]?(?P<code>M\d+)['\"]?\s*,\s*label\s*:\s*['\"]?(?P<label>[^,'\"\}\]]*)['\"]?\s*,\s*src\s*:\s*['\"](?P<src>[^'\"]+)['\"]",
     re.S,
 )
 PREVIEW_RANGE_RE = re.compile(r"preview:\s*\{\s*data:\s*\[\s*\{start:\s*(?P<start>\d+),\s*end:\s*(?P<end>\d+)\}", re.S)
 JS_FIELD_RE = re.compile(r"(?P<key>[A-Za-z0-9_]+)\s*:\s*\"?(?P<value>[^\",\n]+)\"?")
 OG_IMAGE_RE = re.compile(r'<meta\s+property="og:image"\s+content="(?P<url>[^"]+)"', re.I)
 THUMBNAIL_URL_RE = re.compile(r'"thumbnailUrl"\s*:\s*"(?P<url>[^"]+)"', re.I)
+SOURCE_ARRAY_RE = re.compile(r"source\s*=\s*\[(?P<body>.*?)\]\s*;", re.S)
+OG_URL_RE = re.compile(r'<meta\s+property="og:url"\s+content="(?P<url>[^"]+)"', re.I)
+CONTENT_URL_RE = re.compile(r'"contentUrl"\s*:\s*"(?P<url>[^"]+)"', re.I)
 KC_FORM_RE = re.compile(r'id=["\']kc-form-login["\']', re.I)
 KC_FEEDBACK_RE = re.compile(r'kc-feedback-text[^>]*>\s*(?P<msg>[^<]+)\s*<', re.I)
 KC_ALREADY_LOGGED_RE = re.compile(r"you are already logged in", re.I)
@@ -376,12 +379,16 @@ class EbsTvClient:
             return {"success": False, "message": f"로그인 처리 중 오류: {e}", "cookie": ""}
 
     def get_text(self, url: str, referer: str | None = None) -> str:
+        response = self.get_response(url, referer=referer)
+        return response.text or ""
+
+    def get_response(self, url: str, referer: str | None = None) -> requests.Response:
         headers = {}
         if referer:
             headers["Referer"] = referer
         response = self.session.get(url, timeout=self.timeout, headers=headers, allow_redirects=True)
         response.raise_for_status()
-        return response.text or ""
+        return response
 
     def collect_daily_vods(self, page: int = 1) -> list[dict[str, Any]]:
         response = self.session.post(
@@ -439,7 +446,8 @@ class EbsTvClient:
         self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
     ) -> dict[str, str]:
         show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
-        text = self.get_text(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        response = self.get_response(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        text = response.text or ""
         return {
             "thumbnail": self._extract_thumbnail_from_text(text),
             "episode_no": self._extract_episode_no_from_text(text),
@@ -534,14 +542,43 @@ class EbsTvClient:
         self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
     ) -> dict[str, Any]:
         show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
-        text = self.get_text(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        response = self.get_response(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        final_url = response.url or show_url
+        text = response.text or ""
         vod_state = self._parse_vod_state(text)
-        qualities = {}
-        for match in QUALITY_RE.finditer(text):
-            code = (match.group("code") or "").strip()
-            src = (match.group("src") or "").strip()
-            if code and src:
-                qualities[code] = html.unescape(src)
+        qualities = self._extract_qualities(text)
+        resolved_show_url = final_url or show_url
+        final_url_lower = (final_url or "").lower()
+
+        if (not qualities) and ("/vodcommon/show" in final_url_lower):
+            qualities = self._extract_qualities(text)
+        elif (not qualities) and (resolved_show_url != show_url):
+            try:
+                detail_text = self.get_text(resolved_show_url, referer=show_url)
+                detail_state = self._parse_vod_state(detail_text)
+                detail_qualities = self._extract_qualities(detail_text)
+                if detail_qualities:
+                    qualities = detail_qualities
+                    if detail_state:
+                        vod_state = detail_state
+                    text = detail_text
+            except Exception:
+                pass
+        elif (not qualities):
+            detail_url = self._extract_detail_show_url(text)
+            if detail_url and detail_url != resolved_show_url:
+                try:
+                    detail_text = self.get_text(detail_url, referer=resolved_show_url)
+                    detail_state = self._parse_vod_state(detail_text)
+                    detail_qualities = self._extract_qualities(detail_text)
+                    if detail_qualities:
+                        qualities = detail_qualities
+                        if detail_state:
+                            vod_state = detail_state
+                        text = detail_text
+                        resolved_show_url = detail_url
+                except Exception:
+                    pass
         preview_match = PREVIEW_RANGE_RE.search(text)
         preview_end = int(preview_match.group("end")) if preview_match else 0
         return {
@@ -549,9 +586,35 @@ class EbsTvClient:
             "buy_state": vod_state.get("buyState", ""),
             "qualities": qualities,
             "subtitles": {},
-            "show_url": show_url,
+            "show_url": resolved_show_url,
             "preview_end": preview_end,
         }
+
+    def _extract_qualities(self, text: str) -> dict[str, str]:
+        qualities: dict[str, str] = {}
+        search_spaces = [text or ""]
+        source_match = SOURCE_ARRAY_RE.search(text or "")
+        if source_match:
+            search_spaces.insert(0, source_match.group("body") or "")
+        for search_text in search_spaces:
+            for match in QUALITY_RE.finditer(search_text):
+                code = (match.group("code") or "").strip()
+                src = (match.group("src") or "").strip()
+                if code and src:
+                    qualities[code] = html.unescape(src)
+            if qualities:
+                return qualities
+        fallback_patterns = [
+            ("M50", r"https://[^'\"\s>]+_m50\.(?:mp4|m3u8)[^'\"\s<]*"),
+            ("M20", r"https://[^'\"\s>]+_m20\.(?:mp4|m3u8)[^'\"\s<]*"),
+            ("M10", r"https://[^'\"\s>]+_m10\.(?:mp4|m3u8)[^'\"\s<]*"),
+            ("M05", r"https://[^'\"\s>]+_m05\.(?:mp4|m3u8)[^'\"\s<]*"),
+        ]
+        for code, pattern in fallback_patterns:
+            match = re.search(pattern, text or "", re.I)
+            if match:
+                qualities[code] = html.unescape(match.group(0))
+        return qualities
 
     def get_episode_play_info(
         self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
@@ -791,6 +854,13 @@ class EbsTvClient:
             title = html.unescape(match.group("title") or "")
             title = title.split("/")[0].strip()
             return title
+        return ""
+
+    def _extract_detail_show_url(self, text: str) -> str:
+        for regex in (CONTENT_URL_RE, OG_URL_RE):
+            match = regex.search(text or "")
+            if match:
+                return _normalize_url(match.group("url") or "")
         return ""
 
     def _classify_source(self, url: str) -> str:
