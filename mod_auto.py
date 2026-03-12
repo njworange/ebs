@@ -275,8 +275,22 @@ class ModuleAuto(PluginModuleBase):
             try:
                 rows = client.collect_daily_vods(page=page)
             except requests.exceptions.Timeout as e:
-                P.logger.warning("[ebs] collect_daily_vods timeout: page=%s (%s)", page, e)
-                break
+                if page == 1:
+                    retry_timeout = max(client.timeout * 3, 45)
+                    P.logger.warning(
+                        "[ebs] collect_daily_vods timeout: page=%s, retrying once with timeout=%s (%s)",
+                        page,
+                        retry_timeout,
+                        e,
+                    )
+                    try:
+                        rows = client.collect_daily_vods(page=page, timeout=retry_timeout)
+                    except requests.exceptions.Timeout as retry_error:
+                        P.logger.warning("[ebs] collect_daily_vods retry timeout: page=%s (%s)", page, retry_error)
+                        break
+                else:
+                    P.logger.warning("[ebs] collect_daily_vods timeout: page=%s (%s)", page, e)
+                    break
             if not rows:
                 break
             P.logger.info("[ebs] collect_daily_vods page=%s rows=%s", page, len(rows))

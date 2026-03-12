@@ -496,7 +496,8 @@ class EbsTvClient:
             retries=2,
         )
 
-    def collect_daily_vods(self, page: int = 1) -> list[dict[str, Any]]:
+    def collect_daily_vods(self, page: int = 1, timeout: int | None = None) -> list[dict[str, Any]]:
+        request_timeout = max(int(timeout or self.timeout or 15), 10)
         response = self._safe_session_post(
             self.session,
             TV_PROGRAM_LIST_API,
@@ -513,7 +514,7 @@ class EbsTvClient:
                 "frmWeek": "",
             },
             headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{TV_PROGRAM_URL}?tab=vod"},
-            timeout=(10, max(self.timeout, 30)),
+            timeout=(10, max(request_timeout, 30)),
             retries=2,
         )
         text = response.text or ""
