@@ -225,7 +225,7 @@ class EbsTvClient:
                 session,
                 login_page_url,
                 headers={"Referer": BASE_URL},
-                timeout=(5, 15),
+                timeout=(10, 15),
                 retries=2,
             )
             login_page_text = login_resp.text or ""
