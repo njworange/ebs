@@ -17,6 +17,11 @@ TV_PROGRAM_URL = f"{BASE_URL}/tv/program"
 TV_PROGRAM_LIST_API = f"{BASE_URL}/tv/search/programListNew"
 TV_SHOW_URL = f"{BASE_URL}/tv/show"
 TV_SHOW_VOD_LIST_API = f"{BASE_URL}/tv/show/vodListNew"
+TV_SHOW_LOGIN_PROBE_URL = f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016"
+CLASSE_DETAIL_LOGIN_PROBE_URL = (
+    "https://classe.ebs.co.kr/classe/detail/show?"
+    "siteCd=CL&prodId=452564&courseId=10207460&stepId=60058016&lectId=60696453&clsfn_syst_id=40009039"
+)
 
 LIST_ITEM_RE = re.compile(
     r"<li[^>]*>\s*<div class=\"tbl_th\">.*?<strong class=\"mainTit\">\s*"
@@ -106,6 +111,15 @@ class EbsTvClient:
         cookie = (cookie or "").strip()
         if cookie:
             self.session.headers["Cookie"] = cookie
+            for chunk in cookie.split(";"):
+                piece = chunk.strip()
+                if not piece or ("=" not in piece):
+                    continue
+                name, value = piece.split("=", 1)
+                name = name.strip()
+                if not name:
+                    continue
+                self.session.cookies.set(name, value.strip(), domain=".ebs.co.kr")
         elif "Cookie" in self.session.headers:
             del self.session.headers["Cookie"]
 
@@ -184,23 +198,11 @@ class EbsTvClient:
         }
 
     def quick_login_state(self) -> str:
-        probe_url = f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016"
         try:
-            response = self._safe_session_get(
-                self.session,
-                probe_url,
-                headers={"Referer": f"{TV_PROGRAM_URL}?tab=vod"},
-                timeout=(5, 15),
-                retries=2,
-            )
-            text = response.text or ""
-            final_url = response.url or probe_url
-            if _is_sso_or_login_url(final_url):
-                return "N"
+            login_state, _final_url = self._probe_login_state(self.session, self.timeout)
+            return login_state
         except Exception:
             return "미검출"
-        vod_state = self._parse_vod_state(text)
-        return vod_state.get("isLogin", "미검출")
 
     @staticmethod
     def login_and_get_cookie(user_id: str, password: str, user_agent: str, timeout: int = 45) -> dict[str, Any]:
@@ -219,7 +221,7 @@ class EbsTvClient:
                 }
             )
 
-            return_url = TV_PROGRAM_URL + "?tab=vod"
+            return_url = TV_SHOW_LOGIN_PROBE_URL
             login_page_url = f"{BASE_URL}/login?{urlencode({'returnUrl': return_url, 'j_returnurl': return_url})}"
             login_resp = EbsTvClient._safe_session_get(
                 session,
@@ -365,20 +367,10 @@ class EbsTvClient:
             login_state = "N"
             if cookie_header:
                 try:
-                    tv_probe_response = EbsTvClient._safe_session_get(
+                    login_state, final_url = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)._probe_login_state(
                         session,
-                        f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016",
-                        headers={"Referer": TV_PROGRAM_URL + "?tab=vod"},
-                        timeout=(5, 15),
-                        retries=2,
+                        timeout,
                     )
-                    probe_text = tv_probe_response.text or ""
-                    probe_final_url = tv_probe_response.url or ""
-                    if not _is_sso_or_login_url(probe_final_url):
-                        probe_state = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)._parse_vod_state(probe_text)
-                        login_state = probe_state.get("isLogin", "미검출")
-                    else:
-                        login_state = "N"
                     cookie_header = _join_cookie_header(session.cookies)
                 except Exception:
                     login_state = "미검출"
@@ -420,6 +412,42 @@ class EbsTvClient:
                     continue
                 raise
         raise last_error or requests.exceptions.Timeout("session get timeout")
+
+    def _probe_login_state(self, session: requests.Session, timeout: int | None = None) -> tuple[str, str]:
+        probe_targets = [
+            (TV_SHOW_LOGIN_PROBE_URL, f"{TV_PROGRAM_URL}?tab=vod"),
+            (CLASSE_DETAIL_LOGIN_PROBE_URL, TV_SHOW_LOGIN_PROBE_URL),
+        ]
+        resolved_timeout = max(int(timeout or self.timeout or 15), 5)
+        last_final_url = ""
+        for probe_url, referer in probe_targets:
+            response = self._safe_session_get(
+                session,
+                probe_url,
+                headers={"Referer": referer},
+                timeout=(5, resolved_timeout),
+                retries=2,
+            )
+            text = response.text or ""
+            final_url = response.url or probe_url
+            last_final_url = final_url
+            if _is_sso_or_login_url(final_url):
+                continue
+
+            vod_state = self._parse_vod_state(text)
+            login_state = vod_state.get("isLogin", "")
+            if login_state == "Y":
+                return "Y", final_url
+            header_cookie = session.headers.get("Cookie", "")
+            if isinstance(header_cookie, bytes):
+                header_cookie = header_cookie.decode("utf-8", errors="ignore")
+            auth_signals = _has_auth_signal(session.cookies, header_cookie)
+            if _is_classe_detail_url(final_url) and auth_signals:
+                return "Y", final_url
+
+        if last_final_url and _is_sso_or_login_url(last_final_url):
+            return "N", last_final_url
+        return ("미검출", last_final_url)
 
     def get_text(self, url: str, referer: str | None = None) -> str:
         response = self.get_response(url, referer=referer)
@@ -933,6 +961,8 @@ class EbsTvClient:
         path = parsed.path or ""
         if host.endswith("www.ebs.co.kr") and path.startswith("/tv/show"):
             return "tv_show"
+        if host.endswith("classe.ebs.co.kr") and path.startswith("/classe/detail/show"):
+            return "tv_show"
         if host.endswith("news.ebs.co.kr"):
             return "news"
         if host.endswith("anikids.ebs.co.kr"):
@@ -965,8 +995,48 @@ def _origin_for_url(url: str) -> str:
 
 
 def _is_sso_or_login_url(url: str) -> bool:
-    lower = (url or "").lower()
-    return ("sso.ebs.co.kr" in lower) or ("/login" in lower)
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    return (
+        host.endswith("sso.ebs.co.kr")
+        or path.startswith("/login")
+        or path.startswith("/sso/callback")
+        or path.startswith("/classe/dummy")
+    )
+
+
+def _is_authenticated_content_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    if host.endswith("www.ebs.co.kr") and path.startswith("/tv/show"):
+        return True
+    if host.endswith("classe.ebs.co.kr") and path.startswith("/classe/detail/show"):
+        return True
+    return False
+
+
+def _is_classe_detail_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    return host.endswith("classe.ebs.co.kr") and path.startswith("/classe/detail/show")
+
+
+def _has_auth_signal(cookiejar: Any, cookie_header: str = "") -> bool:
+    has_sso_auth = any(
+        c.name == "sso.authenticated" and c.value == "1"
+        for c in cookiejar
+        if (c.domain or "").endswith("ebs.co.kr")
+    )
+    has_kc_identity = any(
+        c.name == "KEYCLOAK_IDENTITY"
+        for c in cookiejar
+        if (c.domain or "").endswith("ebs.co.kr")
+    )
+    header_lower = (cookie_header or "").lower()
+    return has_sso_auth or has_kc_identity or ("sso.authenticated=1" in header_lower) or ("keycloak_identity=" in header_lower)
 
 
 def _parse_kc_feedback(text: str) -> str:
