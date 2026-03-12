@@ -17,15 +17,95 @@
     {{ macros.setting_input_text('basic_save_path', '저장 폴더', value=arg['basic_save_path'], desc=['절대경로 또는 {PATH_DATA}/download 같은 데이터 폴더 기준 상대 경로']) }}
     {{ macros.setting_select('basic_quality', '기본 화질', [['M50', '1080p'], ['M20', '720p'], ['M10', '480p'], ['M05', '360p']], col='3', value=arg['basic_quality']) }}
     {{ macros.setting_input_text('basic_user_agent', '사용자 에이전트', value=arg['basic_user_agent'], desc=['특수한 경우가 아니면 기본값 유지 권장']) }}
+    {{ macros.setting_input_text('basic_account_id', 'EBS 계정 ID', value=arg.get('basic_account_id', '')) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">EBS 계정 비밀번호</label>
+      <div class="col-sm-9">
+        <input id="basic_account_pw" name="basic_account_pw" type="password" class="form-control" value="{{ arg.get('basic_account_pw', '') }}">
+        <small class="form-text text-muted">저장된 계정은 자동 쿠키 갱신에 사용됩니다.</small>
+      </div>
+    </div>
+    {{ macros.setting_checkbox('basic_cookie_refresh', '저장된 계정으로 자동 쿠키 갱신', value=arg.get('basic_cookie_refresh', 'True')) }}
+    <div class="d-flex justify-content-end mb-3" style="gap:8px;">
+      <button id="login_with_account_btn" class="btn btn-outline-primary btn-sm" type="button">로그인하고 쿠키 저장</button>
+      <button id="refresh_cookie_saved_btn" class="btn btn-outline-secondary btn-sm" type="button">저장 계정으로 쿠키 갱신</button>
+    </div>
   {{ macros.m_tab_content_end() }}
 
   {{ macros.m_tab_content_start('auth', false) }}
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">브라우저 쿠키 가져오기</label>
+      <div class="col-sm-9">
+        <div class="input-group">
+          <select id="cookie_browser" name="basic_cookie_browser" class="form-control">
+            <option value="auto" {% if arg.get('basic_cookie_browser', 'auto') == 'auto' %}selected{% endif %}>auto</option>
+            <option value="chrome" {% if arg.get('basic_cookie_browser', '') == 'chrome' %}selected{% endif %}>chrome</option>
+            <option value="edge" {% if arg.get('basic_cookie_browser', '') == 'edge' %}selected{% endif %}>edge</option>
+            <option value="firefox" {% if arg.get('basic_cookie_browser', '') == 'firefox' %}selected{% endif %}>firefox</option>
+            <option value="chromium" {% if arg.get('basic_cookie_browser', '') == 'chromium' %}selected{% endif %}>chromium</option>
+            <option value="brave" {% if arg.get('basic_cookie_browser', '') == 'brave' %}selected{% endif %}>brave</option>
+            <option value="opera" {% if arg.get('basic_cookie_browser', '') == 'opera' %}selected{% endif %}>opera</option>
+            <option value="vivaldi" {% if arg.get('basic_cookie_browser', '') == 'vivaldi' %}selected{% endif %}>vivaldi</option>
+          </select>
+          <div class="input-group-append">
+            <button id="get_cookie_browser_btn" class="btn btn-outline-primary" type="button">브라우저 쿠키 가져오기</button>
+          </div>
+        </div>
+        <small class="form-text text-muted">ebs_downloader처럼 browser_cookie3를 이용해 `ebs.co.kr` 쿠키를 읽습니다.</small>
+      </div>
+    </div>
+    <div class="form-group row">
+      <label class="col-sm-3 col-form-label">쿠키 파일 가져오기</label>
+      <div class="col-sm-9">
+        <div class="input-group">
+          <input id="cookie_file" name="basic_cookie_file" type="text" class="form-control" value="{{ arg.get('basic_cookie_file', '') }}" placeholder="cookies.txt 또는 Cookie 헤더 파일 경로">
+          <div class="input-group-append">
+            <button id="get_cookie_file_btn" class="btn btn-outline-primary" type="button">쿠키 파일 가져오기</button>
+          </div>
+        </div>
+        <small class="form-text text-muted">Netscape cookies.txt 또는 `Cookie: ...` 형식 파일을 지원합니다.</small>
+      </div>
+    </div>
     {{ macros.setting_input_textarea('basic_cookie', '로그인 쿠키', value=arg['basic_cookie'], desc=['브라우저에서 가져온 Cookie 헤더 값을 그대로 넣을 수 있습니다.', 'preview 차단이나 로그인 필요 콘텐츠는 이 쿠키가 있어야 전체 길이 URL을 얻을 가능성이 높습니다.']) }}
     <div class="alert alert-info mt-3 mb-0">
-      AniKids 플러그인처럼 자동 로그인/쿠키 갱신은 아직 넣지 않았습니다. 현재는 수동 쿠키 입력 방식입니다.
+      목록/분석은 비로그인 경로로 유지하고, 재생 URL 해석/다운로드에서만 이 쿠키를 사용합니다.
     </div>
   {{ macros.m_tab_content_end() }}
 </div>
 </form>
+
+<script type="text/javascript">
+$('body').on('click', '#get_cookie_browser_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('get_cookie_browser', ($('#cookie_browser').val() || 'auto'), null, null, function(ret){
+    notify(ret.msg || '처리 완료', ret.ret === 'success' ? 'success' : 'warning');
+    if (ret.cookie) $('#basic_cookie').val(ret.cookie);
+  });
+});
+
+$('body').on('click', '#get_cookie_file_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('get_cookie_file', ($('#cookie_file').val() || '').trim(), null, null, function(ret){
+    notify(ret.msg || '처리 완료', ret.ret === 'success' ? 'success' : 'warning');
+    if (ret.cookie) $('#basic_cookie').val(ret.cookie);
+  });
+});
+
+$('body').on('click', '#login_with_account_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('login_with_account', ($('#basic_account_id').val() || '').trim(), $('#basic_account_pw').val() || '', null, function(ret){
+    notify(ret.msg || '처리 완료', ret.ret === 'success' ? 'success' : 'warning');
+    if (ret.cookie) $('#basic_cookie').val(ret.cookie);
+  });
+});
+
+$('body').on('click', '#refresh_cookie_saved_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('refresh_cookie_saved', null, null, null, function(ret){
+    notify(ret.msg || '처리 완료', ret.ret === 'success' ? 'success' : 'warning');
+    if (ret.cookie) $('#basic_cookie').val(ret.cookie);
+  });
+});
+</script>
 
 {% endblock %}

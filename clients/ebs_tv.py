@@ -2,6 +2,7 @@ import dataclasses
 import html
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
@@ -40,6 +41,15 @@ QUALITY_RE = re.compile(
 )
 PREVIEW_RANGE_RE = re.compile(r"preview:\s*\{\s*data:\s*\[\s*\{start:\s*(?P<start>\d+),\s*end:\s*(?P<end>\d+)\}", re.S)
 JS_FIELD_RE = re.compile(r"(?P<key>[A-Za-z0-9_]+)\s*:\s*\"?(?P<value>[^\",\n]+)\"?")
+OG_IMAGE_RE = re.compile(r'<meta\s+property="og:image"\s+content="(?P<url>[^"]+)"', re.I)
+THUMBNAIL_URL_RE = re.compile(r'"thumbnailUrl"\s*:\s*"(?P<url>[^"]+)"', re.I)
+KC_FORM_RE = re.compile(r'id=["\']kc-form-login["\']', re.I)
+KC_FEEDBACK_RE = re.compile(r'kc-feedback-text[^>]*>\s*(?P<msg>[^<]+)\s*<', re.I)
+KC_ALREADY_LOGGED_RE = re.compile(r"you are already logged in", re.I)
+FORM_OPEN_RE = re.compile(r"<form\b[^>]*>", re.I)
+FORM_BLOCK_RE = re.compile(r"<form\b[^>]*>.*?</form>", re.I | re.S)
+INPUT_RE = re.compile(r"<input\b[^>]*>", re.I)
+ATTR_RE = re.compile(r'([a-zA-Z_:][\w:.-]*)\s*=\s*("([^"]*)"|\'([^\']*)\')')
 
 
 @dataclasses.dataclass
@@ -95,6 +105,259 @@ class EbsTvClient:
         elif "Cookie" in self.session.headers:
             del self.session.headers["Cookie"]
 
+    @staticmethod
+    def get_cookie_from_browser(
+        browser: str = "auto", user_agent: str = "Mozilla/5.0", timeout: int = 20
+    ) -> dict[str, Any]:
+        try:
+            import browser_cookie3  # type: ignore
+        except Exception as e:
+            return {"success": False, "message": f"browser-cookie3 로드 실패: {e}", "cookie": ""}
+
+        browser = (browser or "auto").strip().lower() or "auto"
+        browser_order_all = ["chrome", "edge", "firefox", "chromium", "brave", "opera", "vivaldi"]
+        browser_order = browser_order_all if browser == "auto" else [browser]
+        errors: list[str] = []
+        for browser_name in browser_order:
+            getter = getattr(browser_cookie3, browser_name, None)
+            if not callable(getter):
+                errors.append(f"{browser_name}: 미지원 브라우저")
+                continue
+            try:
+                try:
+                    cookiejar = getter(domain_name="ebs.co.kr")
+                except TypeError:
+                    cookiejar = getter()
+                cookie_header = _join_cookie_header(cookiejar)
+                if not cookie_header:
+                    errors.append(f"{browser_name}: ebs.co.kr 쿠키 없음")
+                    continue
+                client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
+                login_state = client.quick_login_state()
+                return {
+                    "success": login_state != "N",
+                    "message": (
+                        f"{browser_name} 브라우저에서 쿠키를 가져왔습니다. (isLogin: {login_state})"
+                        if login_state != "N"
+                        else f"{browser_name} 브라우저 쿠키를 읽었지만 로그인 상태가 아닙니다. (isLogin: {login_state})"
+                    ),
+                    "cookie": cookie_header if login_state != "N" else "",
+                }
+            except Exception as e:
+                errors.append(f"{browser_name}: {type(e).__name__} - {e}")
+        return {
+            "success": False,
+            "message": "브라우저에서 쿠키를 가져오지 못했습니다. " + (f"(상세: {' | '.join(errors[:4])})" if errors else ""),
+            "cookie": "",
+        }
+
+    @staticmethod
+    def get_cookie_from_file(path: str, user_agent: str = "Mozilla/5.0", timeout: int = 20) -> dict[str, Any]:
+        path = (path or "").strip()
+        if not path:
+            return {"success": False, "message": "쿠키 파일 경로가 비어 있습니다.", "cookie": ""}
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                raw = f.read()
+        except FileNotFoundError:
+            return {"success": False, "message": f"쿠키 파일을 찾을 수 없습니다. (path: {path})", "cookie": ""}
+        except Exception as e:
+            return {"success": False, "message": f"쿠키 파일 읽기 실패: {type(e).__name__} - {e}", "cookie": ""}
+
+        cookie_header = _extract_cookie_header_from_raw(raw)
+        if not cookie_header:
+            return {"success": False, "message": "쿠키 파일에서 ebs.co.kr 쿠키를 추출하지 못했습니다.", "cookie": ""}
+        client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
+        login_state = client.quick_login_state()
+        return {
+            "success": login_state != "N",
+            "message": (
+                f"쿠키 파일에서 쿠키를 가져왔습니다. (isLogin: {login_state})"
+                if login_state != "N"
+                else f"쿠키 파일에서 쿠키를 읽었지만 로그인 상태가 아닙니다. (isLogin: {login_state})"
+            ),
+            "cookie": cookie_header if login_state != "N" else "",
+        }
+
+    def quick_login_state(self) -> str:
+        probe_url = f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016"
+        try:
+            text = self.get_text(probe_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        except Exception:
+            return "미검출"
+        vod_state = self._parse_vod_state(text)
+        return vod_state.get("isLogin", "미검출")
+
+    @staticmethod
+    def login_and_get_cookie(user_id: str, password: str, user_agent: str, timeout: int = 20) -> dict[str, Any]:
+        user_id = (user_id or "").strip()
+        password = password or ""
+        if (not user_id) or (not password):
+            return {"success": False, "message": "아이디/비밀번호를 모두 입력하세요.", "cookie": ""}
+
+        try:
+            session = requests.Session()
+            session.headers.update(
+                {
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ko,en-US;q=0.9,en;q=0.8",
+                    "User-Agent": user_agent or "Mozilla/5.0",
+                }
+            )
+
+            login_page_url = f"{BASE_URL}/login"
+            login_resp = session.get(login_page_url, timeout=timeout, allow_redirects=True, headers={"Referer": BASE_URL})
+            login_page_text = login_resp.text or ""
+            login_page_final = login_resp.url or login_page_url
+
+            form_action = f"{BASE_URL}/sso/login"
+            form_fields: dict[str, str] = {}
+            frm_match = re.search(r'<form\b[^>]*\bid=["\']frm["\'][^>]*>(.*?)</form>', login_page_text, re.I | re.S)
+            if frm_match:
+                frm_html = frm_match.group(0)
+                action_match = re.search(r'\baction=["\']([^"\']+)["\']', frm_html, re.I)
+                if action_match:
+                    form_action = urljoin(login_page_final, action_match.group(1))
+                for inp_match in INPUT_RE.finditer(frm_html):
+                    attrs = _parse_attrs(inp_match.group(0))
+                    inp_type = (attrs.get("type") or "text").lower()
+                    inp_name = (attrs.get("name") or "").strip()
+                    inp_value = attrs.get("value", "")
+                    if inp_type == "hidden" and inp_name:
+                        form_fields[inp_name] = inp_value
+
+            payload = dict(form_fields)
+            payload["i"] = user_id
+            payload["c"] = password
+            payload.setdefault("r", "false")
+            payload.setdefault("userId", "")
+            payload.setdefault("snsSite", "")
+            payload.setdefault("j_logintype", "")
+
+            response = session.post(
+                form_action,
+                data=payload,
+                timeout=timeout,
+                allow_redirects=True,
+                headers={"Referer": login_page_final, "Origin": _origin_for_url(login_page_final)},
+            )
+
+            auto_submit_tried = False
+            final_url = response.url or ""
+            for _ in range(15):
+                current_url = response.url or ""
+                current_url_lower = current_url.lower()
+                if ("www.ebs.co.kr" in current_url_lower) and ("sso.ebs.co.kr" not in current_url_lower) and ("/login" not in current_url_lower):
+                    break
+
+                response_text = response.text or ""
+                has_auto_submit = (
+                    "document.forms[0].submit" in response_text.lower()
+                    or "document.forms['form'].submit" in response_text.lower()
+                    or 'onload="document.forms' in response_text.lower()
+                )
+                action, method, inputs, _action_raw = _extract_best_form(response_text, current_url)
+                if not inputs and not has_auto_submit:
+                    break
+
+                names = {inp["name"] for inp in inputs} if inputs else set()
+                has_login_fields = ("username" in names and "password" in names)
+                relay_fields = {"scope", "response_type", "redirect_uri", "state", "client_id"}
+                is_relay_form = any(key in names for key in relay_fields)
+                action_lower = (action or "").lower()
+                is_sso_action = (
+                    ("sso.ebs.co.kr" in action_lower)
+                    or ("openid-connect" in action_lower)
+                    or ("login-actions" in action_lower)
+                    or ("/sso/" in action_lower)
+                )
+                is_sso_page = "sso.ebs.co.kr" in current_url_lower
+
+                if not (has_login_fields or is_relay_form or is_sso_action or is_sso_page or has_auto_submit):
+                    break
+                if not action and not has_auto_submit:
+                    break
+
+                post_data: dict[str, str] = {}
+                if has_login_fields:
+                    if has_auto_submit and (not auto_submit_tried):
+                        for inp in inputs:
+                            post_data[inp["name"]] = inp["value"]
+                        post_data.setdefault("username", "")
+                        post_data.setdefault("password", "")
+                        auto_submit_tried = True
+                    else:
+                        for inp in inputs:
+                            post_data[inp["name"]] = inp["value"]
+                        post_data["username"] = user_id
+                        post_data["password"] = password
+                        if "credentialId" in names:
+                            post_data["credentialId"] = ""
+                        if "login" in names:
+                            post_data["login"] = "Log In"
+                else:
+                    for inp in inputs:
+                        post_data[inp["name"]] = inp["value"]
+
+                submit_headers = {"Referer": current_url}
+                if method == "post" or has_auto_submit:
+                    origin = _origin_for_url(current_url)
+                    if origin:
+                        submit_headers["Origin"] = origin
+                    submit_url = action or current_url
+                    response = session.post(submit_url, data=post_data, timeout=timeout, allow_redirects=True, headers=submit_headers)
+                else:
+                    response = session.get(action or current_url, params=post_data, timeout=timeout, allow_redirects=True, headers=submit_headers)
+                final_url = response.url or final_url
+
+            response_text = response.text or ""
+            already_logged_in_sso = KC_ALREADY_LOGGED_RE.search(response_text) is not None
+            kc_form_present = KC_FORM_RE.search(response_text) is not None
+            if kc_form_present and (not already_logged_in_sso):
+                feedback = _parse_kc_feedback(response_text)
+                return {
+                    "success": False,
+                    "message": f"SSO 로그인 단계에서 인증에 실패했습니다. ({feedback})" if feedback else "SSO 로그인 단계에서 인증에 실패했습니다.",
+                    "cookie": "",
+                }
+
+            cookie_header = _join_cookie_header(session.cookies)
+            has_sso_auth = any(
+                c.name == "sso.authenticated" and c.value == "1"
+                for c in session.cookies
+                if (c.domain or "").endswith("ebs.co.kr")
+            )
+            has_kc_identity = any(
+                c.name == "KEYCLOAK_IDENTITY"
+                for c in session.cookies
+                if (c.domain or "").endswith("ebs.co.kr")
+            )
+            if has_sso_auth and has_kc_identity and cookie_header:
+                return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
+            if has_sso_auth and cookie_header:
+                return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
+
+            probe_client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
+            login_state = probe_client.quick_login_state() if cookie_header else "N"
+            if login_state == "Y" and cookie_header:
+                return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
+
+            if cookie_header and (not _is_sso_or_login_url(final_url)):
+                return {
+                    "success": True,
+                    "message": "쿠키를 생성했습니다. 로그인 판별 신호가 불안정하여 쿠키 기반으로 계속 진행합니다.",
+                    "cookie": cookie_header,
+                }
+
+            return {
+                "success": False,
+                "message": f"로그인에 실패했습니다. (최종 URL: {_safe_url_for_message(final_url)}, isLogin: {login_state})",
+                "cookie": "",
+            }
+        except Exception as e:
+            logger.exception("[LOGIN] 로그인 처리 중 예외 발생")
+            return {"success": False, "message": f"로그인 처리 중 오류: {e}", "cookie": ""}
+
     def get_text(self, url: str, referer: str | None = None) -> str:
         headers = {}
         if referer:
@@ -149,11 +412,22 @@ class EbsTvClient:
                     "release_date": release_date,
                     "show_url": show_url,
                     "program_url": program_url,
-                    "thumbnail": "",
+                    "thumbnail": self._extract_inline_thumbnail(match.group(0) or ""),
                     "source_type": source_type,
                 }
             )
         return rows
+
+    def fetch_show_metadata(
+        self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
+    ) -> dict[str, str]:
+        show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
+        text = self.get_text(show_url, referer=f"{TV_PROGRAM_URL}?tab=vod")
+        return {
+            "thumbnail": self._extract_thumbnail_from_text(text),
+            "episode_no": self._extract_episode_no_from_text(text),
+            "display_title": self._extract_display_title_from_text(text),
+        }
 
     def analyze_program_url(self, url_or_code: str, step_id: str | None = None) -> dict[str, Any]:
         remote_program_id, remote_episode_id, remote_media_id = self._normalize_input(url_or_code)
@@ -179,6 +453,7 @@ class EbsTvClient:
         program_title = option.get("courseNm") or option.get("stepNm") or remote_program_id
         display_title = option.get("stepNm") or program_title
         prod_id = option.get("prodId") or ""
+        default_thumbnail = self._extract_thumbnail_from_text(show_html)
 
         if not remote_episode_id:
             return {
@@ -204,6 +479,9 @@ class EbsTvClient:
             prod_id=prod_id,
         )
         episodes = self._assign_episode_numbers(pages)
+        for episode in episodes:
+            if not episode.thumbnail:
+                episode.thumbnail = default_thumbnail
         return {
             "success": len(episodes) > 0,
             "message": f"에피소드 {len(episodes)}개 분석 완료" if episodes else "에피소드 목록을 찾지 못했습니다.",
@@ -343,6 +621,7 @@ class EbsTvClient:
                 episode_title = _strip_html_preserve_text(raw_title)
                 release_date = _strip_html_preserve_text(match.group("date") or "")
                 episode_no = _extract_episode_no(episode_title)
+                thumb = self._extract_inline_thumbnail(match.group(0) or "")
                 episodes.append(
                     EpisodeRow(
                         remote_program_id=remote_program_id,
@@ -354,6 +633,7 @@ class EbsTvClient:
                         episode_title=episode_title,
                         release_date=release_date,
                         show_url=self.build_show_url(remote_program_id, item_episode_id, remote_media_id),
+                        thumbnail=thumb,
                     )
                 )
             if page_rows == 0:
@@ -461,6 +741,41 @@ class EbsTvClient:
         except Exception:
             return 1
 
+    def _extract_thumbnail_from_text(self, text: str) -> str:
+        for regex in (THUMBNAIL_URL_RE, OG_IMAGE_RE):
+            match = regex.search(text or "")
+            if match:
+                return _normalize_url(match.group("url") or "")
+        share_match = re.search(r"fn_Share\([^\n]+,'(?P<url>https?://[^']+\.(?:png|jpg|jpeg|gif))'", text or "", re.I)
+        if share_match:
+            return _normalize_url(share_match.group("url") or "")
+        return ""
+
+    def _extract_inline_thumbnail(self, text: str) -> str:
+        img_match = re.search(r'<img[^>]+src="(?P<url>https?://[^"]+)"', text or "", re.I)
+        if img_match:
+            return _normalize_url(img_match.group("url") or "")
+        return ""
+
+    def _extract_episode_no_from_text(self, text: str) -> str:
+        for pattern in [
+            r"<p class=\"view\">\s*(?P<num>\d+)화\b",
+            r"<strong[^>]*>\s*(?P<num>\d+)화\b",
+            r"<title>[^<]*?(?P<num>\d+)화",
+        ]:
+            match = re.search(pattern, text or "", re.I)
+            if match:
+                return match.group("num")
+        return ""
+
+    def _extract_display_title_from_text(self, text: str) -> str:
+        match = re.search(r"<meta\s+property=\"og:title\"\s+content=\"(?P<title>[^\"]+)\"", text or "", re.I)
+        if match:
+            title = html.unescape(match.group("title") or "")
+            title = title.split("/")[0].strip()
+            return title
+        return ""
+
     def _classify_source(self, url: str) -> str:
         if not url:
             return "unknown"
@@ -482,6 +797,163 @@ def _normalize_url(url: str) -> str:
     return urljoin(BASE_URL, html.unescape(url or "").strip())
 
 
+def _safe_url_for_message(url: str) -> str:
+    try:
+        parsed = urlparse(url or "")
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    except Exception:
+        return url or ""
+
+
+def _origin_for_url(url: str) -> str:
+    try:
+        parsed = urlparse(url or "")
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        return ""
+
+
+def _is_sso_or_login_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return ("sso.ebs.co.kr" in lower) or ("/login" in lower)
+
+
+def _parse_kc_feedback(text: str) -> str:
+    if not text:
+        return ""
+    match = KC_FEEDBACK_RE.search(text)
+    if not match:
+        return ""
+    msg = (match.group("msg") or "").strip()
+    low = msg.lower()
+    if "invalid username or password" in low:
+        return "아이디 또는 비밀번호가 올바르지 않습니다."
+    if "account is disabled" in low:
+        return "계정이 비활성화 상태입니다."
+    return msg
+
+
+def _parse_attrs(tag: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for match in ATTR_RE.finditer(tag):
+        key = match.group(1).lower()
+        val = match.group(3) if match.group(3) is not None else match.group(4)
+        attrs[key] = html.unescape(val or "")
+    return attrs
+
+
+def _parse_form_block(form_html: str, base_url: str) -> tuple[str | None, str | None, list[dict[str, str]], str, str]:
+    form_open = FORM_OPEN_RE.search(form_html)
+    if not form_open:
+        return None, None, [], "", ""
+    form_attrs = _parse_attrs(form_open.group(0))
+    action_raw = form_attrs.get("action", "").strip()
+    method = (form_attrs.get("method", "get") or "get").strip().lower()
+    action = urljoin(base_url, action_raw) if action_raw else ""
+    form_id = (form_attrs.get("id") or "").strip().lower()
+    inputs: list[dict[str, str]] = []
+    for input_match in INPUT_RE.finditer(form_html):
+        attrs = _parse_attrs(input_match.group(0))
+        name = (attrs.get("name") or "").strip()
+        if not name:
+            continue
+        inputs.append({
+            "name": name,
+            "value": attrs.get("value", ""),
+            "type": (attrs.get("type", "text") or "text").lower(),
+        })
+    return action, method, inputs, action_raw, form_id
+
+
+def _score_form_candidate(action: str | None, inputs: list[dict[str, str]], form_id: str) -> int:
+    names = {inp.get("name", "") for inp in inputs}
+    action_lower = (action or "").lower()
+    score = 0
+    if form_id == "kc-form-login":
+        score += 100
+    if ("username" in names) and ("password" in names):
+        score += 80
+    relay_fields = {"scope", "response_type", "redirect_uri", "state", "client_id"}
+    if any(key in names for key in relay_fields):
+        score += 50
+    if "openid-connect/auth" in action_lower:
+        score += 50
+    if "login-actions/authenticate" in action_lower:
+        score += 50
+    if action:
+        score += 5
+    return score
+
+
+def _extract_best_form(text: str, base_url: str) -> tuple[str | None, str | None, list[dict[str, str]], str]:
+    best: tuple[str | None, str | None, list[dict[str, str]], str, int] | None = None
+    for match in FORM_BLOCK_RE.finditer(text):
+        action, method, inputs, action_raw, form_id = _parse_form_block(match.group(0), base_url)
+        score = _score_form_candidate(action, inputs, form_id)
+        if best is None or score > best[4]:
+            best = (action, method, inputs, action_raw, score)
+    if best is None:
+        form_open = FORM_OPEN_RE.search(text)
+        if not form_open:
+            return None, None, [], ""
+        form_html = text[form_open.start():]
+        action, method, inputs, action_raw, _ = _parse_form_block(form_html, base_url)
+        return action, method, inputs, action_raw
+    return best[0], best[1], best[2], best[3]
+
+
+def _join_cookie_header(cookiejar: Any) -> str:
+    values: dict[str, str] = {}
+    for cookie in cookiejar:
+        domain = (cookie.domain or "").lstrip(".")
+        if not domain.endswith("ebs.co.kr"):
+            continue
+        values[cookie.name] = cookie.value or ""
+    return "; ".join(f"{name}={value}" for name, value in values.items())
+
+
+def _extract_cookie_header_from_raw(raw: str) -> str:
+    raw_stripped = (raw or "").strip()
+    if not raw_stripped:
+        return ""
+    if ("# Netscape HTTP Cookie File" in raw_stripped) or ("\t" in raw_stripped):
+        values: dict[str, str] = {}
+        now = int(time.time())
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#HttpOnly_"):
+                line = line[1:]
+            elif line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            domain = (parts[0] or "").strip().lstrip(".")
+            if domain.startswith("HttpOnly_"):
+                domain = domain[len("HttpOnly_") :]
+            if not domain.endswith("ebs.co.kr"):
+                continue
+            expiry_raw = (parts[4] or "").strip()
+            try:
+                expiry = int(expiry_raw) if expiry_raw else 0
+            except Exception:
+                expiry = 0
+            if expiry and expiry < now:
+                continue
+            name = (parts[5] or "").strip()
+            value = parts[6] if len(parts) >= 7 else ""
+            if name:
+                values[name] = value
+        return "; ".join(f"{k}={v}" for k, v in values.items())
+    if raw_stripped.lower().startswith("cookie:"):
+        raw_stripped = raw_stripped.split(":", 1)[1].strip()
+    return raw_stripped
+
+
 def _strip_html_preserve_text(text: str) -> str:
     text = html.unescape(text or "")
     text = re.sub(r"<span class=\"date\">.*?</span>", "", text, flags=re.S)
@@ -492,10 +964,10 @@ def _strip_html_preserve_text(text: str) -> str:
 
 def _extract_episode_no(title: str) -> str:
     title = html.unescape(title or "")
-    match = re.match(r"\s*(\d+)\s*[회화편]\b", title)
+    match = re.match(r"\s*(\d+)\s*(?:회|화|편)\b", title)
     if match:
         return match.group(1)
-    match = re.match(r"\s*제\s*(\d+)\s*[회화편]", title)
+    match = re.match(r"\s*제\s*(\d+)\s*(?:회|화|편)", title)
     if match:
         return match.group(1)
     return ""

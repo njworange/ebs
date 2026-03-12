@@ -25,6 +25,11 @@ class ModuleBasic(PluginModuleBase):
                 "Chrome/132.0.0.0 Safari/537.36"
             ),
             f"{self.name}_cookie": "",
+            f"{self.name}_account_id": "",
+            f"{self.name}_account_pw": "",
+            f"{self.name}_cookie_refresh": "True",
+            f"{self.name}_cookie_browser": "auto",
+            f"{self.name}_cookie_file": "",
             f"{self.name}_recent_url": "",
         }
         self.previous_analyze = None
@@ -108,10 +113,67 @@ class ModuleBasic(PluginModuleBase):
                     QueueService.enqueue_item(item.id)
                     added += 1
                 ret["msg"] = f"{added}개를 다운로드 큐에 추가했습니다."
+            case "login_with_account":
+                user_id = (arg1 or "").strip()
+                password = arg2 or ""
+                user_agent = P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0"
+                result = EbsTvClient.login_and_get_cookie(user_id=user_id, password=password, user_agent=user_agent)
+                ret["msg"] = result.get("message") or "로그인 처리 완료"
+                if result.get("success") and result.get("cookie"):
+                    P.ModelSetting.set(f"{self.name}_cookie", result.get("cookie"))
+                    P.ModelSetting.set(f"{self.name}_account_id", user_id)
+                    P.ModelSetting.set(f"{self.name}_account_pw", password)
+                    ret["cookie"] = result.get("cookie")
+                else:
+                    ret["ret"] = "warning"
+            case "refresh_cookie_saved":
+                ok, msg = self.refresh_cookie_with_saved_account(force=True)
+                if ok:
+                    ret["msg"] = msg
+                    ret["cookie"] = P.ModelSetting.get(f"{self.name}_cookie") or ""
+                else:
+                    ret["ret"] = "warning"
+                    ret["msg"] = msg
+            case "get_cookie_browser":
+                browser = (arg1 or P.ModelSetting.get(f"{self.name}_cookie_browser") or "auto").strip() or "auto"
+                user_agent = P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0"
+                result = EbsTvClient.get_cookie_from_browser(browser=browser, user_agent=user_agent)
+                ret["msg"] = result.get("message") or "브라우저 쿠키 처리 완료"
+                if result.get("success") and result.get("cookie"):
+                    P.ModelSetting.set(f"{self.name}_cookie", result.get("cookie"))
+                    P.ModelSetting.set(f"{self.name}_cookie_browser", browser)
+                    ret["cookie"] = result.get("cookie")
+                else:
+                    ret["ret"] = "warning"
+            case "get_cookie_file":
+                path = (arg1 or P.ModelSetting.get(f"{self.name}_cookie_file") or "").strip()
+                user_agent = P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0"
+                result = EbsTvClient.get_cookie_from_file(path=path, user_agent=user_agent)
+                ret["msg"] = result.get("message") or "쿠키 파일 처리 완료"
+                if result.get("success") and result.get("cookie"):
+                    P.ModelSetting.set(f"{self.name}_cookie", result.get("cookie"))
+                    P.ModelSetting.set(f"{self.name}_cookie_file", path)
+                    ret["cookie"] = result.get("cookie")
+                else:
+                    ret["ret"] = "warning"
             case _:
                 ret["ret"] = "warning"
                 ret["msg"] = f"지원하지 않는 명령: {command}"
         return flask.jsonify(ret)
+
+    def refresh_cookie_with_saved_account(self, force: bool = False) -> tuple[bool, str]:
+        if (not force) and (not P.ModelSetting.get_bool(f"{self.name}_cookie_refresh")):
+            return False, "자동 쿠키 갱신이 꺼져 있습니다."
+        user_id = (P.ModelSetting.get(f"{self.name}_account_id") or "").strip()
+        password = P.ModelSetting.get(f"{self.name}_account_pw") or ""
+        if (not user_id) or (not password):
+            return False, "자동 갱신용 계정(ID/PW)이 저장되어 있지 않습니다."
+        user_agent = P.ModelSetting.get(f"{self.name}_user_agent") or "Mozilla/5.0"
+        result = EbsTvClient.login_and_get_cookie(user_id=user_id, password=password, user_agent=user_agent)
+        if result.get("success") and result.get("cookie"):
+            P.ModelSetting.set(f"{self.name}_cookie", result.get("cookie"))
+            return True, "저장된 계정으로 쿠키를 갱신했습니다."
+        return False, result.get("message") or "쿠키 갱신 실패"
 
     def annotate_episodes(self, episodes: list[dict]) -> None:
         from .models import ModelEbsEpisode
