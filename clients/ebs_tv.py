@@ -12,6 +12,7 @@ import requests
 logger = logging.getLogger("ebs.client")
 
 BASE_URL = "https://www.ebs.co.kr"
+ANIKIDS_BASE_URL = "https://anikids.ebs.co.kr"
 TV_PROGRAM_URL = f"{BASE_URL}/tv/program"
 TV_PROGRAM_LIST_API = f"{BASE_URL}/tv/search/programListNew"
 TV_SHOW_URL = f"{BASE_URL}/tv/show"
@@ -189,7 +190,7 @@ class EbsTvClient:
         return vod_state.get("isLogin", "미검출")
 
     @staticmethod
-    def login_and_get_cookie(user_id: str, password: str, user_agent: str, timeout: int = 20) -> dict[str, Any]:
+    def login_and_get_cookie(user_id: str, password: str, user_agent: str, timeout: int = 45) -> dict[str, Any]:
         user_id = (user_id or "").strip()
         password = password or ""
         if (not user_id) or (not password):
@@ -205,12 +206,28 @@ class EbsTvClient:
                 }
             )
 
-            login_page_url = f"{BASE_URL}/login"
-            login_resp = session.get(login_page_url, timeout=timeout, allow_redirects=True, headers={"Referer": BASE_URL})
+            login_page_url = f"{ANIKIDS_BASE_URL}/login?{urlencode({'returnUrl': TV_PROGRAM_URL + '?tab=vod'})}"
+            login_resp = None
+            last_error = None
+            for _ in range(2):
+                try:
+                    login_resp = session.get(
+                        login_page_url,
+                        timeout=timeout,
+                        allow_redirects=True,
+                        headers={"Referer": ANIKIDS_BASE_URL},
+                    )
+                    last_error = None
+                    break
+                except requests.exceptions.Timeout as e:
+                    last_error = e
+                    time.sleep(1)
+            if login_resp is None:
+                raise last_error or requests.exceptions.Timeout("login page timeout")
             login_page_text = login_resp.text or ""
             login_page_final = login_resp.url or login_page_url
 
-            form_action = f"{BASE_URL}/sso/login"
+            form_action = f"{ANIKIDS_BASE_URL}/sso/login"
             form_fields: dict[str, str] = {}
             frm_match = re.search(r'<form\b[^>]*\bid=["\']frm["\'][^>]*>(.*?)</form>', login_page_text, re.I | re.S)
             if frm_match:
@@ -247,7 +264,7 @@ class EbsTvClient:
             for _ in range(15):
                 current_url = response.url or ""
                 current_url_lower = current_url.lower()
-                if ("www.ebs.co.kr" in current_url_lower) and ("sso.ebs.co.kr" not in current_url_lower) and ("/login" not in current_url_lower):
+                if (("anikids.ebs.co.kr" in current_url_lower) or ("www.ebs.co.kr" in current_url_lower)) and ("sso.ebs.co.kr" not in current_url_lower) and ("/login" not in current_url_lower):
                     break
 
                 response_text = response.text or ""
