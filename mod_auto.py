@@ -239,10 +239,27 @@ class ModuleAuto(PluginModuleBase):
         )
 
     def make_auth_client(self) -> EbsTvClient:
+        cookie = (P.ModelSetting.get("basic_cookie") or "").strip()
+        if (not cookie) and P.ModelSetting.get_bool("basic_cookie_refresh"):
+            self.refresh_cookie_with_saved_account(force=False)
         return EbsTvClient(
             cookie=(P.ModelSetting.get("basic_cookie") or "").strip(),
             user_agent=P.ModelSetting.get("basic_user_agent") or "Mozilla/5.0",
         )
+
+    def refresh_cookie_with_saved_account(self, force: bool = False) -> tuple[bool, str]:
+        if (not force) and (not P.ModelSetting.get_bool("basic_cookie_refresh")):
+            return False, "자동 쿠키 갱신이 꺼져 있습니다."
+        user_id = (P.ModelSetting.get("basic_account_id") or "").strip()
+        password = P.ModelSetting.get("basic_account_pw") or ""
+        if (not user_id) or (not password):
+            return False, "자동 갱신용 계정(ID/PW)이 저장되어 있지 않습니다."
+        user_agent = P.ModelSetting.get("basic_user_agent") or "Mozilla/5.0"
+        result = EbsTvClient.login_and_get_cookie(user_id=user_id, password=password, user_agent=user_agent)
+        if result.get("success") and result.get("cookie"):
+            P.ModelSetting.set("basic_cookie", result.get("cookie"))
+            return True, "저장된 계정으로 쿠키를 갱신했습니다."
+        return False, result.get("message") or "쿠키 갱신 실패"
 
     def collect_episodes(self) -> int:
         client = self.make_public_client()
@@ -272,6 +289,24 @@ class ModuleAuto(PluginModuleBase):
                 if (not remote_program_id) or (not remote_episode_id) or (not remote_media_id):
                     skipped_unsupported += 1
                     continue
+                if row.get("source_type") == "tv_show":
+                    if (not row.get("thumbnail")) or (not row.get("episode_no")):
+                        try:
+                            metadata = client.fetch_show_metadata(remote_program_id, remote_episode_id, remote_media_id)
+                            if metadata.get("thumbnail") and not row.get("thumbnail"):
+                                row["thumbnail"] = metadata.get("thumbnail")
+                            if metadata.get("episode_no") and not row.get("episode_no"):
+                                row["episode_no"] = metadata.get("episode_no")
+                            if metadata.get("display_title"):
+                                row["display_title"] = metadata.get("display_title")
+                        except Exception as e:
+                            P.logger.debug(
+                                "[ebs] show 메타데이터 보강 실패: %s / %s / %s (%s)",
+                                remote_program_id,
+                                remote_episode_id,
+                                remote_media_id,
+                                e,
+                            )
                 item = ModelEbsEpisode.get_by_keys(remote_program_id, remote_episode_id, remote_media_id)
                 if item:
                     continue
@@ -418,15 +453,31 @@ class ModuleAuto(PluginModuleBase):
             item.is_preview = client.is_preview_url(play_url) or int(info.get("preview_end") or 0) > 0
             allow_preview = P.ModelSetting.get_bool(f"{self.name}_allow_preview")
             if item.is_preview and not allow_preview:
-                item.status = "PREVIEW_BLOCKED"
-                item.retry += 1
-                item.message = "프리뷰 URL 감지. 로그인/구독 쿠키를 확인하세요."
-                item.save()
-                return
+                refreshed, refresh_msg = self.refresh_cookie_with_saved_account(force=False)
+                if refreshed:
+                    client = self.make_auth_client()
+                    info = client.resolve_play_info(
+                        item.remote_program_id,
+                        item.remote_episode_id,
+                        item.remote_media_id,
+                    )
+                    quality_code, play_url = self.pick_quality(info.get("qualities") or {}, preferred_quality)
+                    item.quality_code = quality_code or item.quality_code
+                    item.play_url = play_url or item.play_url
+                    item.is_login = "Y" if info.get("is_login") else "N"
+                    item.buy_state = info.get("buy_state") or item.buy_state
+                    item.is_preview = (client.is_preview_url(play_url or "") or int(info.get("preview_end") or 0) > 0)
+                if item.is_preview and not allow_preview:
+                    item.status = "PREVIEW_BLOCKED"
+                    item.retry += 1
+                    item.message = refresh_msg if refreshed else "프리뷰 URL 감지. 로그인/구독 쿠키를 확인하세요."
+                    item.save()
+                    return
 
             save_path = ToolUtil.make_path(P.ModelSetting.get("basic_save_path"))
             pathlib.Path(save_path).mkdir(parents=True, exist_ok=True)
-            filename = item.make_filename(quality_code)
+            final_quality_code = quality_code or (P.ModelSetting.get("basic_quality") or "M50")
+            filename = item.make_filename(final_quality_code)
             output_path = pathlib.Path(save_path) / filename
             if output_path.exists() and output_path.stat().st_size > 0:
                 item.filesize = output_path.stat().st_size
