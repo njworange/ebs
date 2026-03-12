@@ -352,8 +352,21 @@ class EbsTvClient:
                 for c in session.cookies
                 if (c.domain or "").endswith("ebs.co.kr")
             )
-            probe_client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
-            login_state = probe_client.quick_login_state() if cookie_header else "N"
+            login_state = "N"
+            if cookie_header:
+                try:
+                    tv_probe_response = session.get(
+                        f"{BASE_URL}/tv/show?courseId=10207460&lectId=60696407&stepId=60058016",
+                        timeout=timeout,
+                        allow_redirects=True,
+                        headers={"Referer": TV_PROGRAM_URL + "?tab=vod"},
+                    )
+                    probe_text = tv_probe_response.text or ""
+                    probe_state = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)._parse_vod_state(probe_text)
+                    login_state = probe_state.get("isLogin", "미검출")
+                    cookie_header = _join_cookie_header(session.cookies)
+                except Exception:
+                    login_state = "미검출"
             if login_state == "Y" and cookie_header:
                 return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
 
