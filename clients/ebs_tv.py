@@ -352,26 +352,18 @@ class EbsTvClient:
                 for c in session.cookies
                 if (c.domain or "").endswith("ebs.co.kr")
             )
-            if has_sso_auth and has_kc_identity and cookie_header:
-                return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
-            if has_sso_auth and cookie_header:
-                return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
-
             probe_client = EbsTvClient(cookie=cookie_header, user_agent=user_agent or "Mozilla/5.0", timeout=timeout)
             login_state = probe_client.quick_login_state() if cookie_header else "N"
             if login_state == "Y" and cookie_header:
                 return {"success": True, "message": "로그인 성공. 쿠키를 생성했습니다.", "cookie": cookie_header}
 
-            if cookie_header and (not _is_sso_or_login_url(final_url)):
-                return {
-                    "success": True,
-                    "message": "쿠키를 생성했습니다. 로그인 판별 신호가 불안정하여 쿠키 기반으로 계속 진행합니다.",
-                    "cookie": cookie_header,
-                }
-
             return {
                 "success": False,
-                "message": f"로그인에 실패했습니다. (최종 URL: {_safe_url_for_message(final_url)}, isLogin: {login_state})",
+                "message": (
+                    f"로그인에 실패했습니다. (최종 URL: {_safe_url_for_message(final_url)}, "
+                    f"isLogin: {login_state}, sso.authenticated: {'Y' if has_sso_auth else 'N'}, "
+                    f"KEYCLOAK_IDENTITY: {'Y' if has_kc_identity else 'N'})"
+                ),
                 "cookie": "",
             }
         except Exception as e:
