@@ -269,6 +269,7 @@ class ModuleAuto(PluginModuleBase):
 
     def collect_episodes(self) -> int:
         client = self.make_public_client()
+        analysis_cache: dict[tuple[str, str], dict[str, str]] = {}
         page_limit = max(P.ModelSetting.get_int(f"{self.name}_scan_page_limit"), 1)
         collect_since = parse_collect_since(P.ModelSetting.get(f"{self.name}_collect_since"))
         created = 0
@@ -318,11 +319,19 @@ class ModuleAuto(PluginModuleBase):
                     needs_authoritative_episode = (not row.get("episode_no")) and ((item is None) or self._needs_authoritative_episode_no(item))
                     if needs_authoritative_episode:
                         try:
-                            row["episode_no"] = client.fetch_episode_no_from_vod_list(
+                            row["episode_no"] = self._lookup_episode_no_from_analysis(
+                                client,
+                                analysis_cache,
                                 remote_program_id,
                                 remote_episode_id,
                                 remote_media_id,
                             )
+                            if not row.get("episode_no"):
+                                row["episode_no"] = client.fetch_episode_no_from_vod_list(
+                                    remote_program_id,
+                                    remote_episode_id,
+                                    remote_media_id,
+                                )
                         except Exception as e:
                             P.logger.debug(
                                 "[ebs] episode_no list-first lookup 실패: %s / %s / %s (%s)",
@@ -365,7 +374,7 @@ class ModuleAuto(PluginModuleBase):
                     if row.get("thumbnail") and not item.thumbnail:
                         item.thumbnail = row.get("thumbnail") or ""
                         updated = True
-                    if row.get("episode_no") and not item.episode_no:
+                    if row.get("episode_no") and ((not item.episode_no) or self._episode_no_looks_untrusted(item)):
                         item.episode_no = row.get("episode_no") or ""
                         updated = True
                     if row.get("program_title") and title_needs_upgrade(item.program_title or ""):
@@ -407,6 +416,7 @@ class ModuleAuto(PluginModuleBase):
     def backfill_episode_numbers(self, limit: int = 50) -> int:
         client = self.make_public_client()
         items = ModelEbsEpisode.get_incomplete_tv_show_items(limit=limit)
+        analysis_cache: dict[tuple[str, str], dict[str, str]] = {}
         updated = 0
 
         for item in items:
@@ -414,14 +424,22 @@ class ModuleAuto(PluginModuleBase):
                 continue
             episode_no = ""
             try:
-                episode_no = (
-                    client.fetch_episode_no_from_vod_list(
-                        item.remote_program_id,
-                        item.remote_episode_id,
-                        item.remote_media_id,
-                    )
-                    or ""
-                ).strip()
+                episode_no = self._lookup_episode_no_from_analysis(
+                    client,
+                    analysis_cache,
+                    item.remote_program_id,
+                    item.remote_episode_id,
+                    item.remote_media_id,
+                )
+                if not episode_no:
+                    episode_no = (
+                        client.fetch_episode_no_from_vod_list(
+                            item.remote_program_id,
+                            item.remote_episode_id,
+                            item.remote_media_id,
+                        )
+                        or ""
+                    ).strip()
             except Exception as e:
                 P.logger.debug(
                     "[ebs] episode_no backfill list-first lookup 실패: %s / %s / %s (%s)",
@@ -434,10 +452,57 @@ class ModuleAuto(PluginModuleBase):
             if episode_no:
                 if item.episode_no != episode_no:
                     item.episode_no = episode_no
-                item.save()
-                updated += 1
+                    item.save()
+                    updated += 1
 
         return updated
+
+    def _lookup_episode_no_from_analysis(
+        self,
+        client: EbsTvClient,
+        analysis_cache: dict[tuple[str, str], dict[str, str]],
+        remote_program_id: str,
+        remote_episode_id: str,
+        remote_media_id: str,
+    ) -> str:
+        cache_key = ((remote_program_id or "").strip(), (remote_media_id or "").strip())
+        if (not cache_key[0]) or (not cache_key[1]):
+            return ""
+        if cache_key not in analysis_cache:
+            analysis_cache[cache_key] = self._build_episode_map_from_analysis(
+                client,
+                remote_program_id=cache_key[0],
+                remote_episode_id=(remote_episode_id or "").strip(),
+                remote_media_id=cache_key[1],
+            )
+        return (analysis_cache.get(cache_key, {}).get((remote_episode_id or "").strip()) or "").strip()
+
+    def _build_episode_map_from_analysis(
+        self,
+        client: EbsTvClient,
+        remote_program_id: str,
+        remote_episode_id: str,
+        remote_media_id: str,
+    ) -> dict[str, str]:
+        analysis_input = client.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
+        result = client.analyze_program_url(analysis_input, step_id=remote_media_id or None)
+        if not result.get("success"):
+            return {}
+        data = result.get("data") or {}
+        episodes = data.get("episodes") or []
+        mapping: dict[str, str] = {}
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            episode_id = (
+                (episode.get("remote_episode_id") or "")
+                or (episode.get("lect_id") or "")
+                or (episode.get("lectId") or "")
+            ).strip()
+            episode_no = (episode.get("episode_no") or "").strip()
+            if episode_id and episode_no:
+                mapping[episode_id] = episode_no
+        return mapping
 
     def _needs_authoritative_episode_no(self, item: ModelEbsEpisode) -> bool:
         return (not (item.episode_no or "").strip()) or self._episode_no_looks_untrusted(item)
