@@ -129,6 +129,9 @@ class ModuleAuto(PluginModuleBase):
                 reset_count = self.retry_failed()
                 queued = self.enqueue_candidates(include_failed=True)
                 ret["msg"] = f"실패 항목 {reset_count}개를 재시도 상태로 변경, {queued}개를 큐에 추가했습니다."
+            case "backfill_episode_no":
+                updated = self.backfill_episode_numbers(limit=50)
+                ret["msg"] = f"에피소드 번호 {updated}개를 보강했습니다."
             case "queue_reset":
                 ret["msg"] = f"큐 초기화 완료 ({self.reset_queue()}개)."
             case "reset_status":
@@ -380,6 +383,88 @@ class ModuleAuto(PluginModuleBase):
             collect_since.isoformat() if collect_since else "",
         )
         return created
+
+    def backfill_episode_numbers(self, limit: int = 50) -> int:
+        client = self.make_public_client()
+        items = ModelEbsEpisode.get_blank_episode_no_items(limit=limit)
+        updated = 0
+        touched_groups: set[tuple[str, str]] = set()
+
+        for item in items:
+            metadata: dict[str, str] = {}
+            try:
+                metadata = client.fetch_show_metadata(item.remote_program_id, item.remote_episode_id, item.remote_media_id)
+                episode_no = (metadata.get("episode_no") or "").strip()
+            except Exception as e:
+                P.logger.debug(
+                    "[ebs] episode_no backfill metadata 실패: %s / %s / %s (%s)",
+                    item.remote_program_id,
+                    item.remote_episode_id,
+                    item.remote_media_id,
+                    e,
+                )
+                episode_no = ""
+
+            if episode_no:
+                item.episode_no = episode_no
+                if metadata.get("program_title") and title_needs_upgrade(item.program_title or ""):
+                    item.program_title = metadata.get("program_title") or item.program_title
+                if metadata.get("display_title") and (
+                    (not item.display_title)
+                    or (item.display_title == item.episode_title)
+                    or title_needs_upgrade(item.display_title or "")
+                    or normalize_text(item.display_title or "") == normalize_text(item.remote_program_id or "")
+                ):
+                    item.display_title = metadata.get("display_title") or item.display_title
+                if metadata.get("thumbnail") and not item.thumbnail:
+                    item.thumbnail = metadata.get("thumbnail") or item.thumbnail
+                item.save()
+                updated += 1
+                continue
+
+            remaining = max(limit - updated, 0)
+            if remaining <= 0:
+                break
+            group_key = (item.remote_program_id or "", item.remote_media_id or "")
+            if (not group_key[0]) or (not group_key[1]) or (group_key in touched_groups):
+                continue
+            touched_groups.add(group_key)
+            updated += self._backfill_episode_numbers_locally(*group_key, max_updates=remaining)
+
+        return updated
+
+    def _backfill_episode_numbers_locally(self, remote_program_id: str, remote_media_id: str, max_updates: int | None = None) -> int:
+        group_items = ModelEbsEpisode.get_program_group_items(remote_program_id, remote_media_id)
+        if not group_items:
+            return 0
+
+        ordered = sorted(
+            group_items,
+            key=lambda item: (
+                parse_release_date(item.release_date or "") or datetime.date.min,
+                item.remote_episode_id or "",
+                item.id or 0,
+            ),
+        )
+
+        next_no = 1
+        updated = 0
+        for item in ordered:
+            if max_updates is not None and updated >= max_updates:
+                break
+            if item.completed:
+                continue
+            existing = (item.episode_no or "").strip()
+            if existing:
+                digits = "".join(ch for ch in existing if ch.isdigit())
+                if digits:
+                    next_no = max(next_no, int(digits) + 1)
+                continue
+            item.episode_no = str(next_no)
+            item.save()
+            updated += 1
+            next_no += 1
+        return updated
 
     def _is_allowed(self, item: ModelEbsEpisode, settings: dict) -> tuple[bool, str]:
         if item.completed:

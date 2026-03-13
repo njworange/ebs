@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 
-{{ macros.m_button_group([['collect_now_btn', '수집+큐 추가'], ['retry_failed_btn', '실패 재시도'], ['queue_status_btn', '큐 상태'], ['queue_reset_btn', '큐 초기화']])}}
+{{ macros.m_button_group([['collect_now_btn', '수집+큐 추가'], ['backfill_episode_no_btn', '회차 번호 백필'], ['retry_failed_btn', '실패 재시도'], ['queue_status_btn', '큐 상태'], ['queue_reset_btn', '큐 초기화']])}}
 {{ macros.m_row_start('5') }}
 {{ macros.m_row_end() }}
 
@@ -116,6 +116,16 @@ $('body').on('click', '#retry_failed_btn', function(e){
   globalSendCommand('retry_failed', null, null, null, function(ret){
     notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
     globalRequestSearch(current_page || 1);
+  });
+});
+
+$('body').on('click', '#backfill_episode_no_btn', function(e){
+  e.preventDefault();
+  globalConfirmModal('회차 번호 백필', '빈 회차 번호를 최대 50개까지 보강할까요? 이미 다운로드 완료된 항목은 제외합니다.', function() {
+    globalSendCommand('backfill_episode_no', null, null, null, function(ret){
+      notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+      globalRequestSearch(current_page || 1);
+    });
   });
 });
 

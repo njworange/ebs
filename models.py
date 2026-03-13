@@ -2,7 +2,7 @@ import datetime
 import pathlib
 import re
 
-from sqlalchemy import desc, or_
+from sqlalchemy import desc, func, or_
 
 from plugin.model_base import ModelBase
 from .setup import F, P
@@ -148,6 +148,31 @@ class ModelEbsEpisode(ModelBase):
                 .filter(cls.completed == False)
                 .filter(cls.status.in_(["WAITING", "DOWNLOADING"]))
                 .order_by(desc(cls.id))
+                .all()
+            )
+
+    @classmethod
+    def get_blank_episode_no_items(cls, limit: int = 100) -> list["ModelEbsEpisode"]:
+        with F.app.app_context():
+            query = (
+                F.db.session.query(cls)
+                .filter(cls.completed == False)
+                .filter((cls.episode_no == None) | (func.trim(cls.episode_no) == ""))
+                .filter(cls.source_type == "tv_show")
+                .order_by(desc(cls.release_date), desc(cls.id))
+            )
+            if limit > 0:
+                query = query.limit(limit)
+            return query.all()
+
+    @classmethod
+    def get_program_group_items(cls, remote_program_id: str, remote_media_id: str) -> list["ModelEbsEpisode"]:
+        with F.app.app_context():
+            return (
+                F.db.session.query(cls)
+                .filter(cls.remote_program_id == remote_program_id)
+                .filter(cls.remote_media_id == remote_media_id)
+                .order_by(desc(cls.release_date), desc(cls.remote_episode_id), desc(cls.id))
                 .all()
             )
 
