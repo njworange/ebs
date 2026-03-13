@@ -551,7 +551,7 @@ class EbsTvClient:
         return rows
 
     def fetch_show_metadata(
-        self, remote_program_id: str, remote_episode_id: str, remote_media_id: str
+        self, remote_program_id: str, remote_episode_id: str, remote_media_id: str, include_episode_no: bool = True
     ) -> dict[str, str]:
         show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
         response = self._safe_session_get(
@@ -568,30 +568,45 @@ class EbsTvClient:
         if not program_title:
             program_title = course_name
         display_title = program_title or self._extract_display_title_from_text(text)
-        episode_no = self._extract_episode_no_from_text(text)
-        if not episode_no:
-            for candidate in [
-                option.get("stepNm") or "",
-                option.get("lectNm") or "",
-                self._extract_episode_title_from_text(text),
-            ]:
-                episode_no = _extract_episode_no(candidate)
-                if episode_no:
-                    break
-        if not episode_no:
-            episode_no = self._resolve_episode_no_from_vod_list(
-                remote_program_id=remote_program_id,
-                remote_episode_id=remote_episode_id,
-                remote_media_id=remote_media_id,
-                display_title=display_title or program_title or remote_program_id,
-                prod_id=(option.get("prodId") or "").strip(),
-            )
+        episode_no = ""
+        if include_episode_no:
+            episode_no = self._extract_episode_no_from_text(text)
+            if not episode_no:
+                for candidate in [
+                    option.get("stepNm") or "",
+                    option.get("lectNm") or "",
+                    self._extract_episode_title_from_text(text),
+                ]:
+                    episode_no = _extract_episode_no(candidate)
+                    if episode_no:
+                        break
+            if not episode_no:
+                episode_no = self._resolve_episode_no_from_vod_list(
+                    remote_program_id=remote_program_id,
+                    remote_episode_id=remote_episode_id,
+                    remote_media_id=remote_media_id,
+                    display_title=display_title or program_title or remote_program_id,
+                    prod_id=(option.get("prodId") or "").strip(),
+                )
         return {
             "thumbnail": self._extract_thumbnail_from_text(text),
             "episode_no": episode_no,
             "program_title": program_title,
             "display_title": display_title,
         }
+
+    def fetch_episode_no_from_vod_list(self, remote_program_id: str, remote_episode_id: str, remote_media_id: str) -> str:
+        show_url = self.build_show_url(remote_program_id, remote_episode_id, remote_media_id)
+        prod_id = self._resolve_prod_id_from_show_redirect(show_url)
+        if not prod_id:
+            return ""
+        return self._resolve_episode_no_from_vod_list(
+            remote_program_id=remote_program_id,
+            remote_episode_id=remote_episode_id,
+            remote_media_id=remote_media_id,
+            display_title=remote_program_id,
+            prod_id=prod_id,
+        )
 
     def analyze_program_url(self, url_or_code: str, step_id: str | None = None) -> dict[str, Any]:
         remote_program_id, remote_episode_id, remote_media_id = self._normalize_input(url_or_code)
@@ -905,6 +920,48 @@ class EbsTvClient:
             retries=2,
         )
         return response.text or ""
+
+    def _resolve_prod_id_from_show_redirect(self, show_url: str) -> str:
+        last_error: Exception | None = None
+        headers = {"Referer": f"{TV_PROGRAM_URL}?tab=vod"}
+        for attempt in range(2):
+            try:
+                response = self.session.get(
+                    show_url,
+                    headers=headers,
+                    timeout=(5, max(self.timeout, 15)),
+                    allow_redirects=False,
+                )
+                location = response.headers.get("Location") or response.headers.get("location") or ""
+                if location:
+                    query = parse_qs(urlparse(location).query)
+                    prod_id = ((query.get("prodId") or [""])[0] or "").strip()
+                    if prod_id:
+                        return prod_id
+                if 200 <= response.status_code < 300:
+                    return self._extract_prod_id_from_text(response.text or "")
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+            except Exception as e:
+                last_error = e
+                break
+        if last_error:
+            logger.debug("[EPISODE_NO] prodId redirect lookup failed: %s (%s)", show_url, last_error)
+        return ""
+
+    def _extract_prod_id_from_text(self, text: str) -> str:
+        for pattern in [
+            r"[\"']?prodId[\"']?\s*[:=]\s*['\"]?(?P<prod_id>[A-Za-z0-9]+)",
+            r"ajax VodOption \[.*?prodId=(?P<prod_id>[A-Za-z0-9]+)",
+            r"[?&]prodId=(?P<prod_id>[A-Za-z0-9]+)",
+        ]:
+            match = re.search(pattern, text or "", re.I | re.S)
+            if match:
+                return (match.group("prod_id") or "").strip()
+        return ""
 
     def _resolve_episode_no_from_vod_list(
         self,

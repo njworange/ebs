@@ -313,16 +313,37 @@ class ModuleAuto(PluginModuleBase):
                 if (not remote_program_id) or (not remote_episode_id) or (not remote_media_id):
                     skipped_unsupported += 1
                     continue
+                item = ModelEbsEpisode.get_by_keys(remote_program_id, remote_episode_id, remote_media_id)
                 if row.get("source_type") == "tv_show":
+                    needs_authoritative_episode = (not row.get("episode_no")) and ((item is None) or self._needs_authoritative_episode_no(item))
+                    if needs_authoritative_episode:
+                        try:
+                            row["episode_no"] = client.fetch_episode_no_from_vod_list(
+                                remote_program_id,
+                                remote_episode_id,
+                                remote_media_id,
+                            )
+                        except Exception as e:
+                            P.logger.debug(
+                                "[ebs] episode_no list-first lookup 실패: %s / %s / %s (%s)",
+                                remote_program_id,
+                                remote_episode_id,
+                                remote_media_id,
+                                e,
+                            )
                     needs_metadata = (
                         (not row.get("thumbnail"))
-                        or (not row.get("episode_no"))
                         or title_needs_upgrade(row.get("program_title") or "")
                         or (row.get("display_title") or "") == (row.get("episode_title") or "")
                     )
                     if needs_metadata:
                         try:
-                            metadata = client.fetch_show_metadata(remote_program_id, remote_episode_id, remote_media_id)
+                            metadata = client.fetch_show_metadata(
+                                remote_program_id,
+                                remote_episode_id,
+                                remote_media_id,
+                                include_episode_no=not needs_authoritative_episode,
+                            )
                             if metadata.get("thumbnail") and not row.get("thumbnail"):
                                 row["thumbnail"] = metadata.get("thumbnail")
                             if metadata.get("episode_no") and not row.get("episode_no"):
@@ -339,7 +360,6 @@ class ModuleAuto(PluginModuleBase):
                                 remote_media_id,
                                 e,
                             )
-                item = ModelEbsEpisode.get_by_keys(remote_program_id, remote_episode_id, remote_media_id)
                 if item:
                     updated = False
                     if row.get("thumbnail") and not item.thumbnail:
@@ -392,40 +412,28 @@ class ModuleAuto(PluginModuleBase):
         for item in items:
             if not self._needs_authoritative_episode_no(item):
                 continue
-            metadata: dict[str, str] = {}
+            episode_no = ""
             try:
-                metadata = client.fetch_show_metadata(item.remote_program_id, item.remote_episode_id, item.remote_media_id)
-                episode_no = (metadata.get("episode_no") or "").strip()
+                episode_no = (
+                    client.fetch_episode_no_from_vod_list(
+                        item.remote_program_id,
+                        item.remote_episode_id,
+                        item.remote_media_id,
+                    )
+                    or ""
+                ).strip()
             except Exception as e:
                 P.logger.debug(
-                    "[ebs] episode_no backfill metadata 실패: %s / %s / %s (%s)",
+                    "[ebs] episode_no backfill list-first lookup 실패: %s / %s / %s (%s)",
                     item.remote_program_id,
                     item.remote_episode_id,
                     item.remote_media_id,
                     e,
                 )
-                episode_no = ""
 
             if episode_no:
                 if item.episode_no != episode_no:
                     item.episode_no = episode_no
-                if metadata.get("program_title") and title_needs_upgrade(item.program_title or ""):
-                    item.program_title = metadata.get("program_title") or item.program_title
-                if metadata.get("display_title") and (
-                    (not item.display_title)
-                    or (item.display_title == item.episode_title)
-                    or title_needs_upgrade(item.display_title or "")
-                    or normalize_text(item.display_title or "") == normalize_text(item.remote_program_id or "")
-                ):
-                    item.display_title = metadata.get("display_title") or item.display_title
-                if metadata.get("thumbnail") and not item.thumbnail:
-                    item.thumbnail = metadata.get("thumbnail") or item.thumbnail
-                item.save()
-                updated += 1
-                continue
-
-            if (item.episode_no or "").strip():
-                item.episode_no = ""
                 item.save()
                 updated += 1
 
