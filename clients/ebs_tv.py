@@ -667,18 +667,6 @@ class EbsTvClient:
         }
 
     def _assign_episode_numbers(self, episodes: list[EpisodeRow]) -> list[EpisodeRow]:
-        if not episodes:
-            return episodes
-        if all((ep.episode_no or "").strip() for ep in episodes):
-            return episodes
-        ordered = sorted(episodes, key=lambda ep: (_date_key(ep.release_date), ep.remote_episode_id))
-        next_idx = 1
-        for episode in ordered:
-            if (episode.episode_no or "").strip():
-                continue
-            episode.episode_no = str(next_idx)
-            next_idx += 1
-        episodes.sort(key=lambda ep: (_date_key(ep.release_date), ep.remote_episode_id), reverse=True)
         return episodes
 
     def resolve_play_info(
@@ -940,7 +928,6 @@ class EbsTvClient:
             )
         except Exception:
             return ""
-        episodes = self._assign_episode_numbers(episodes)
         for episode in episodes:
             if episode.remote_episode_id == remote_episode_id:
                 return (episode.episode_no or "").strip()
@@ -1035,9 +1022,9 @@ class EbsTvClient:
 
     def _extract_episode_no_from_text(self, text: str) -> str:
         for pattern in [
-            r"<p class=\"view\">[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)\b",
-            r"<strong[^>]*>[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)\b",
-            r"<title>[^<]*?(?P<num>\d+)\s*(?:회|화|편|부|강)",
+            r"<p class=\"view\">[^<]*?(?P<num>\d+)\s*(?:회|화|편)\b",
+            r"<strong[^>]*>[^<]*?(?P<num>\d+)\s*(?:회|화|편)\b",
+            r"<title>[^<]*?(?P<num>\d+)\s*(?:회|화|편)",
         ]:
             match = re.search(pattern, text or "", re.I)
             if match:
@@ -1318,10 +1305,10 @@ def _title_looks_generic(title: str) -> bool:
 
 def _extract_episode_no(title: str) -> str:
     title = html.unescape(title or "")
-    match = re.search(r"(?:^|\s|\()제?\s*(\d+)\s*(?:회|화|편|부|강)\b", title)
+    match = re.search(r"(?:^|\s|\()제?\s*(\d+)\s*(?:회|화|편)\b", title)
     if match:
         return match.group(1)
-    match = re.search(r"(?:episode|ep)\s*[-.]?\s*(\d+)\s*(?:회|화|편|부|강)?\b", title, re.I)
+    match = re.search(r"(?:episode|ep)\s*[-.]?\s*(\d+)\s*(?:회|화|편)?\b", title, re.I)
     if match:
         return match.group(1)
     return ""

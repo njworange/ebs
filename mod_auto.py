@@ -386,11 +386,12 @@ class ModuleAuto(PluginModuleBase):
 
     def backfill_episode_numbers(self, limit: int = 50) -> int:
         client = self.make_public_client()
-        items = ModelEbsEpisode.get_blank_episode_no_items(limit=limit)
+        items = ModelEbsEpisode.get_incomplete_tv_show_items(limit=limit)
         updated = 0
-        touched_groups: set[tuple[str, str]] = set()
 
         for item in items:
+            if not self._needs_authoritative_episode_no(item):
+                continue
             metadata: dict[str, str] = {}
             try:
                 metadata = client.fetch_show_metadata(item.remote_program_id, item.remote_episode_id, item.remote_media_id)
@@ -406,7 +407,8 @@ class ModuleAuto(PluginModuleBase):
                 episode_no = ""
 
             if episode_no:
-                item.episode_no = episode_no
+                if item.episode_no != episode_no:
+                    item.episode_no = episode_no
                 if metadata.get("program_title") and title_needs_upgrade(item.program_title or ""):
                     item.program_title = metadata.get("program_title") or item.program_title
                 if metadata.get("display_title") and (
@@ -422,49 +424,27 @@ class ModuleAuto(PluginModuleBase):
                 updated += 1
                 continue
 
-            remaining = max(limit - updated, 0)
-            if remaining <= 0:
-                break
-            group_key = (item.remote_program_id or "", item.remote_media_id or "")
-            if (not group_key[0]) or (not group_key[1]) or (group_key in touched_groups):
-                continue
-            touched_groups.add(group_key)
-            updated += self._backfill_episode_numbers_locally(*group_key, max_updates=remaining)
+            if (item.episode_no or "").strip():
+                item.episode_no = ""
+                item.save()
+                updated += 1
 
         return updated
 
-    def _backfill_episode_numbers_locally(self, remote_program_id: str, remote_media_id: str, max_updates: int | None = None) -> int:
-        group_items = ModelEbsEpisode.get_program_group_items(remote_program_id, remote_media_id)
-        if not group_items:
-            return 0
+    def _needs_authoritative_episode_no(self, item: ModelEbsEpisode) -> bool:
+        return (not (item.episode_no or "").strip()) or self._episode_no_looks_untrusted(item)
 
-        ordered = sorted(
-            group_items,
-            key=lambda item: (
-                parse_release_date(item.release_date or "") or datetime.date.min,
-                item.remote_episode_id or "",
-                item.id or 0,
-            ),
-        )
+    def _episode_no_looks_untrusted(self, item: ModelEbsEpisode) -> bool:
+        episode_no = (item.episode_no or "").strip()
+        if not episode_no:
+            return True
 
-        next_no = 1
-        updated = 0
-        for item in ordered:
-            if max_updates is not None and updated >= max_updates:
-                break
-            if item.completed:
-                continue
-            existing = (item.episode_no or "").strip()
-            if existing:
-                digits = "".join(ch for ch in existing if ch.isdigit())
-                if digits:
-                    next_no = max(next_no, int(digits) + 1)
-                continue
-            item.episode_no = str(next_no)
-            item.save()
-            updated += 1
-            next_no += 1
-        return updated
+        digits = "".join(ch for ch in episode_no if ch.isdigit())
+        title = item.episode_title or ""
+        segment_match = re.search(r"(?:^|\s|\(|-)제?\s*(\d+)\s*(부|강)\b", title)
+        if digits and segment_match and segment_match.group(1) == digits:
+            return True
+        return False
 
     def _is_allowed(self, item: ModelEbsEpisode, settings: dict) -> tuple[bool, str]:
         if item.completed:

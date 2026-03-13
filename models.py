@@ -177,6 +177,19 @@ class ModelEbsEpisode(ModelBase):
             )
 
     @classmethod
+    def get_incomplete_tv_show_items(cls, limit: int = 100) -> list["ModelEbsEpisode"]:
+        with F.app.app_context():
+            query = (
+                F.db.session.query(cls)
+                .filter(cls.completed == False)
+                .filter(cls.source_type == "tv_show")
+                .order_by(desc(cls.release_date), desc(cls.id))
+            )
+            if limit > 0:
+                query = query.limit(limit)
+            return query.all()
+
+    @classmethod
     def make_query(
         cls, req, order: str = "desc", search: str = "", option1: str = "all", option2: str = "all"
     ):
